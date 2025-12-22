@@ -1,0 +1,20 @@
+{
+  "name": "cycle-tasks-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "parcel src/index.html --host 0.0.0.0 --port 8080",
+    "build": "parcel build src/index.html --dist-dir dist --public-url ."
+  },
+  "dependencies": {
+    "@cycle/dom": "^23.1.0",
+    "@cycle/http": "^15.4.0",
+    "@cycle/run": "^5.7.0",
+    "@cycle/history": "^9.0.0",
+    "@cycle/state": "^1.7.0",
+    "xstream": "^11.14.0"
+  },
+  "devDependencies": {
+    "parcel": "^2.13.3"
+  }
+}

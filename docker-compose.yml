@@ -1,0 +1,28 @@
+services:
+  ui:
+    build: .
+    depends_on:
+      - api
+    ports:
+      - "8082:80"
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: todo
+      POSTGRES_USER: todo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-todo}
+    volumes:
+      - db:/var/lib/postgresql/data
+      - ../postgres-todo/db/init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+  api:
+    image: postgrest/postgrest:v14.1
+    depends_on:
+      - db
+    environment:
+      PGRST_DB_URI: postgres://todo:${POSTGRES_PASSWORD:-todo}@db:5432/todo
+      PGRST_DB_SCHEMAS: api
+      PGRST_DB_ANON_ROLE: todo
+      PGRST_SERVER_PORT: 3000
+volumes:
+  db:
+
