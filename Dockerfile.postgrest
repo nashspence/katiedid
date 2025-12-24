@@ -7,6 +7,8 @@ RUN set -eu; \
 FROM postgrest/postgrest:v14.1
 
 COPY --from=tools /usr/bin/psql /usr/bin/pg_isready /usr/bin/curl /usr/bin/
+COPY --from=tools /usr/bin/env /usr/bin/env
+COPY --from=tools /bin/sh /bin/sh
 COPY --from=tools /usr/lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu
 COPY --from=tools /lib/x86_64-linux-gnu /lib/x86_64-linux-gnu
 

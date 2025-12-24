@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/bin/sh
 set -eu
 
 : "${PGRST_DB_URI:?PGRST_DB_URI is required}"
