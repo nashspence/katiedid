@@ -11,6 +11,7 @@ COPY --from=tools /usr/bin/env /usr/bin/env
 COPY --from=tools /bin/sh /bin/sh
 COPY --from=tools /usr/lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu
 COPY --from=tools /lib/x86_64-linux-gnu /lib/x86_64-linux-gnu
+COPY --from=tools /lib64/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
 
 COPY --chmod=755 db/init.sh db/schema.sql db/postgrest-entrypoint.sh /db/
 
