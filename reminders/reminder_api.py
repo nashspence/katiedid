@@ -147,6 +147,7 @@ async def create_reminder(body: Dict[str, Any]) -> Dict[str, Any]:
 
     title = body.get("title", "")
     message = body.get("message", "")
+    reminder_text = body.get("reminder_text") or None
     tags = body.get("tags") or []
     apprise_targets = body.get("apprise_targets") or []
 
@@ -182,6 +183,7 @@ async def create_reminder(body: Dict[str, Any]) -> Dict[str, Any]:
             apprise_targets=list(apprise_targets),
             entity_type=entity_type,
             entity_id=entity_id,
+            reminder_text=reminder_text,
         ),
         id=record_wf_id,
         task_queue=TASK_QUEUE,
@@ -301,6 +303,7 @@ async def update_reminder(reminder_id: str, body: Dict[str, Any]) -> Dict[str, A
 
     title = body.get("title", "")
     message = body.get("message", "")
+    reminder_text = body.get("reminder_text") if "reminder_text" in body else None
     tags = body.get("tags") or []
     apprise_targets = body.get("apprise_targets") or []
 
@@ -345,6 +348,8 @@ async def update_reminder(reminder_id: str, body: Dict[str, Any]) -> Dict[str, A
         "tags": tags,
         "apprise_targets": apprise_targets,
     }
+    if "reminder_text" in body:
+        patch["reminder_text"] = reminder_text
     # Only include association fields if present in request (prevents accidental clears).
     if "entity_type" in body:
         patch["entity_type"] = entity_type
