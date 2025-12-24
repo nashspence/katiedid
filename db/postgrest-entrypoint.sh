@@ -5,8 +5,12 @@ set -eu
 : "${APPRISE_ENDPOINT:=http://apprise-api:8000/notify/}"
 
 echo "[postgrest] waiting for database..."
-until pg_isready -d "$PGRST_DB_URI" >/dev/null 2>&1; do
-  echo "[postgrest] database not ready, retrying in 1s..."
+while true; do
+  if output=$(psql "$PGRST_DB_URI" -c 'select 1' >/dev/null 2>&1); then
+    break
+  fi
+
+  echo "[postgrest] database not ready: ${output:-unknown error}; retrying in 1s..."
   sleep 1
 done
 
