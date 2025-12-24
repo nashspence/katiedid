@@ -1,4 +1,5 @@
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -22,17 +23,24 @@ class ReminderRecord:
     # Generic external association
     entity_type: Optional[str] = None
     entity_id: Optional[str] = None
+    reminder_text: Optional[str] = None
     next_fire_time: Optional[datetime] = None
+
+
+def _clean_text(s: Optional[str]) -> str:
+    tokens = re.findall(r"[A-Za-z0-9_\-]+", s or "")
+    return " ".join(tokens)
 
 
 def _sa_for_record(r: ReminderRecord, record_workflow_id: Optional[str] = None) -> Dict[str, Any]:
     # Temporal Search Attributes must be lists (even singletons). Empty list clears.
+    text = _clean_text(r.reminder_text) or _clean_text(f"{r.title} {r.message}")
     out: Dict[str, Any] = {
         "ReminderId": [r.reminder_id],
         "ReminderTitle": [r.title],
         "ReminderTags": list(r.tags or []),  # KeywordList
         "ReminderTargets": list(r.apprise_targets or []),  # KeywordList
-        "ReminderText": [f"{r.title} {r.message}".strip()],  # Text
+        "ReminderText": [text] if text else [],  # Text
         "ReminderNextFireTime": [r.next_fire_time] if r.next_fire_time else [],  # Datetime
 
         # Generic association (renamed)

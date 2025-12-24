@@ -8,6 +8,8 @@ import {
 } from '@cycle/dom';
 import {makeHTTPDriver} from '@cycle/http';
 import {makeHistoryDriver} from '@cycle/history';
+import humanInterval from '@lesjoursfr/human-interval';
+import {DateTime} from 'luxon';
 
 const API = `${location.origin}/api`;
 const REMINDERS_API = `${location.origin}/reminders`;
@@ -33,7 +35,7 @@ const parseCols = s => {
 
 const parseRoute = search => {
   const qs = new URLSearchParams(search || '');
-  const page = qs.get('page') || 'home';               // home | task | new | edit | move | alerts | alert
+  const page = qs.get('page') || 'home';               // home | task | new | edit | move | alerts | alert | reminder
   const id = num(qs.get('id'));
   const parent = num(qs.get('parent'));
   const atag = (qs.get('atag') || '').trim();          // alert tag detail
@@ -65,8 +67,10 @@ const initialState = {
   route: parseRoute(location.search),
   task: null,
   list: [],
+  reminders: [],
   hasMore: false,
   form: {title:'', description:'', tags:'', due_date:''},
+  reminderForm: {text:''},
   moveParent: '',
   alerts: [],          // raw rows {tag,url,enabled,created_at}
   alertUrls: [],       // rows for one tag
@@ -76,19 +80,64 @@ const initialState = {
 
 const base = s => (s === undefined ? initialState : s);
 
-// local-time, readable, minimal
-const DF = new Intl.DateTimeFormat(undefined, {dateStyle:'medium'});
-const DTF = new Intl.DateTimeFormat(undefined, {dateStyle:'medium', timeStyle:'short'});
+const toDateTime = v => {
+  if (v == null || v === '') return null;
+  if (DateTime.isDateTime(v)) return v.isValid ? v : null;
+  if (v instanceof Date) return DateTime.fromJSDate(v);
+  const raw = String(v);
+  const hasZone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(raw);
+  const iso = DateTime.fromISO(raw, {setZone: hasZone});
+  if (iso.isValid) return hasZone ? iso : iso.setZone('local', {keepLocalTime: true});
+  const local = DateTime.fromISO(raw, {zone: 'local'});
+  return local.isValid ? local : null;
+};
 const dueFmt = s => {
-  if (!s) return '';
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s));
-  const d = m ? new Date(+m[1], +m[2]-1, +m[3]) : new Date(s);
-  return isNaN(d) ? String(s) : DF.format(d);
+  const dt = toDateTime(s);
+  return dt ? dt.toLocal().toLocaleString(DateTime.DATETIME_MED) : (s || '');
 };
 const createdFmt = s => {
-  if (!s) return '';
-  const d = new Date(s);
-  return isNaN(d) ? String(s) : DTF.format(d);
+  const dt = toDateTime(s);
+  return dt ? dt.toLocal().toLocaleString(DateTime.DATETIME_MED) : (s || '');
+};
+const toLocalInput = s => {
+  const dt = toDateTime(s);
+  return dt ? dt.toLocal().toFormat("yyyy-LL-dd'T'HH:mm") : '';
+};
+const toZonedISOString = v => {
+  const dt = toDateTime(v);
+  return dt ? dt.toISO({suppressMilliseconds: true}) : null;
+};
+const reminderAttrs = r => (r && r.search_attributes) ? r.search_attributes : {};
+const reminderPick = (r, k) => {
+  const v = reminderAttrs(r)[k];
+  return Array.isArray(v) ? v[0] : v;
+};
+const reminderArr = (r, k) => {
+  const v = reminderAttrs(r)[k];
+  if (Array.isArray(v)) return v.filter(x => x != null).map(x => String(x));
+  return v != null ? [String(v)] : null;
+};
+const reminderCalendar = dt => ({
+  year:[{start: dt.year}],
+  month:[{start: dt.month}],
+  day_of_month:[{start: dt.day}],
+  hour:[{start: dt.hour}],
+  minute:[{start: dt.minute}],
+  second:[{start: Math.floor(dt.second)}],
+});
+const reminderFireTime = (due, text) => {
+  const ms = text ? humanInterval(text) : null;
+  const dt = toDateTime(due);
+  if (!dt || !dt.isValid || !ms || !Number.isFinite(ms)) return null;
+  return dt.minus({milliseconds: ms});
+};
+const reminderSpec = fire => {
+  const start_at = toZonedISOString(fire);
+  return start_at ? {
+    calendars:[reminderCalendar(fire)],
+    time_zone_name: fire.zoneName || DateTime.local().zoneName,
+    start_at,
+  } : null;
 };
 
 function intent(sources) {
@@ -165,6 +214,11 @@ function intent(sources) {
     formInput('input.fdue', 'due_date'),
   );
 
+  const reminderFormReducer$ = ev('input.rtext', 'input')
+    .map(e => prev => ({...prev, text: e.target.value}));
+
+  const reminderSubmit$ = ev('form.reminder-form', 'submit', {preventDefault: true}).mapTo(true);
+
   const submitKind$ = xs.merge(
     ev('form.task-form', 'submit', {preventDefault: true}).mapTo('task'),
     ev('form.move-form', 'submit', {preventDefault: true}).mapTo('move'),
@@ -195,6 +249,7 @@ function intent(sources) {
     dragstart$, dragover$, dropInto$, dropUp$,
     formReducer$, submitKind$, del$, moveParent$,
     anewReducer$, aaddUrl$, acreate$, atoggle$, adel$, adelTag$,
+    reminderFormReducer$, reminderSubmit$,
   };
 }
 
@@ -222,6 +277,8 @@ function model(sources, actions) {
     return `${col}.${r.dir}${nul}`;
   };
 
+  const remindersUrl = id => `${REMINDERS_API}/reminders?entity_type=task&entity_id=${id}&sort=next`;
+
   const listUrl = (r, parentId) => {
     const qs = new URLSearchParams();
     qs.set('select', sel);
@@ -243,6 +300,37 @@ function model(sources, actions) {
     `${API}/apprise_targets?select=${alertsSel}&order=tag.asc,url.asc&limit=1000`;
   const alertsTagUrl = tag =>
     `${API}/apprise_targets?select=${alertsSel}&tag=eq.${encodeURIComponent(tag)}&order=url.asc`;
+  const targetsForTags = (tags, rows) => {
+    const set = new Set();
+    if (Array.isArray(tags) && Array.isArray(rows)) {
+      rows.forEach(x => {
+        if (x && x.enabled && tags.includes(x.tag)) set.add(x.url);
+      });
+    }
+    return Array.from(set);
+  };
+  const targetsMap = rows => {
+    const map = new Map();
+    (rows || []).forEach(x => {
+      if (!x || !x.tag) return;
+      if (!map.has(x.tag)) map.set(x.tag, []);
+      if (x.enabled) map.get(x.tag).push(x.url);
+    });
+    map.forEach((urls, tag) => map.set(tag, Array.from(new Set(urls)).sort()));
+    return map;
+  };
+  const changedTargetTags = (prev, next) => {
+    const before = targetsMap(prev);
+    const after = targetsMap(next);
+    const tags = new Set([...before.keys(), ...after.keys()]);
+    const changed = new Set();
+    tags.forEach(t => {
+      const a = before.get(t) || [];
+      const b = after.get(t) || [];
+      if (a.length !== b.length || a.some((v, i) => v !== b[i])) changed.add(t);
+    });
+    return changed;
+  };
 
   const reqsForRoute = r => {
     if (r.page === 'home') return [{url: listUrl(r, null), method:'GET', category:'list'}];
@@ -250,10 +338,20 @@ function model(sources, actions) {
       return [
         {url: `${API}/tasks?select=${sel}&id=eq.${r.id}`, method:'GET', category:'task'},
         {url: listUrl(r, r.id), method:'GET', category:'list'},
+        {url: remindersUrl(r.id), method:'GET', category:'reminders'},
       ];
     }
     if ((r.page === 'edit' || r.page === 'move') && r.id != null) {
-      return [{url: `${API}/tasks?select=${sel}&id=eq.${r.id}`, method:'GET', category:'task'}];
+      return [
+        {url: `${API}/tasks?select=${sel}&id=eq.${r.id}`, method:'GET', category:'task'},
+        {url: remindersUrl(r.id), method:'GET', category:'reminders'},
+      ];
+    }
+    if (r.page === 'reminder' && r.id != null) {
+      return [
+        {url: `${API}/tasks?select=${sel}&id=eq.${r.id}`, method:'GET', category:'task'},
+        {url: alertsAllUrl(), method:'GET', category:'alerts'},
+      ];
     }
     if (r.page === 'alerts') return [{url: alertsAllUrl(), method:'GET', category:'alerts'}];
     if (r.page === 'alert' && r.atag) return [{url: alertsTagUrl(r.atag), method:'GET', category:'aurls'}];
@@ -271,12 +369,14 @@ function model(sources, actions) {
       const pageList = hasMore ? list.slice(0, r.limit) : list;
       const s = base(prev);
       return {...s, list: pageList, hasMore};
-    });
+  });
 
   const taskReducer$ = selectBody('task', asOne).map(task => setKey('task', task));
   const taskFromHTTP$ = selectBody('task', asOne).remember();
+  const remindersReducer$ = selectBody('reminders', asArray).map(rows => setKey('reminders', rows));
 
-  const alertsReducer$ = selectBody('alerts', asArray).map(rows => setKey('alerts', rows));
+  const alertsBody$ = selectBody('alerts', asArray);
+  const alertsReducer$ = alertsBody$.map(rows => setKey('alerts', rows));
   const aurlsReducer$ = selectBody('aurls', asArray).map(rows => setKey('alertUrls', rows));
 
   const formInitReducer$ = route$.map(r => prev => {
@@ -284,6 +384,7 @@ function model(sources, actions) {
     if (r.page === 'new') return {...s, form:{title:'', description:'', tags:'', due_date:''}, moveParent:'', task:null};
     if (r.page === 'edit') return {...s, moveParent:''};
     if (r.page === 'move') return s;
+    if (r.page === 'reminder') return {...s, reminderForm:{text:''}};
     if (r.page === 'alerts') return {...s, anew:{tag:'', url:''}, aaddUrl:'', alertUrls:[]};
     if (r.page === 'alert') return {...s, aaddUrl:''};
     return {...s, moveParent:''};
@@ -296,7 +397,7 @@ function model(sources, actions) {
         title: t.title || '',
         description: t.description || '',
         tags: (t.tags || []).join(' '),
-        due_date: t.due_date || '',
+        due_date: toLocalInput(t.due_date || ''),
       }
     }));
 
@@ -314,15 +415,21 @@ function model(sources, actions) {
     return {...s, anew: reducer(s.anew)};
   });
 
+  const reminderInputReducer$ = actions.reminderFormReducer$.map(reducer => prev => {
+    const s = base(prev);
+    return {...s, reminderForm: reducer(s.reminderForm)};
+  });
+
   const aaddUrlReducer$ = actions.aaddUrl$.map(v => setKey('aaddUrl', v));
   const moveParentReducer$ = actions.moveParent$.map(v => setKey('moveParent', v));
 
   const reducer$ = xs.merge(
     initReducer$, routeReducer$, listReducer$, taskReducer$,
+    remindersReducer$,
     alertsReducer$, aurlsReducer$,
     formInitReducer$, formFromTaskReducer$, moveFromTaskReducer$,
     formInputReducer$, moveParentReducer$,
-    anewInputReducer$, aaddUrlReducer$,
+    anewInputReducer$, aaddUrlReducer$, reminderInputReducer$,
   );
 
   // ---- History ----
@@ -347,22 +454,24 @@ function model(sources, actions) {
 
   const buildSubmitReq = (kind, r, s) => {
     if (kind === 'task' && r.page === 'new') {
+      const due_date = toZonedISOString(s.form.due_date);
       const send = {
         title: String(s.form.title || '').trim(),
         description: String(s.form.description || ''),
         tags: tagsFrom(s.form.tags),
-        due_date: s.form.due_date || null,
+        due_date,
         done: false,
         parent_id: r.parent,
       };
       return send.title ? {url: `${API}/rpc/append_task`, method:'POST', headers:J, send, category:'create'} : null;
     }
     if (kind === 'task' && r.page === 'edit' && r.id != null) {
+      const due_date = toZonedISOString(s.form.due_date);
       const send = {
         title: String(s.form.title || '').trim(),
         description: String(s.form.description || ''),
         tags: tagsFrom(s.form.tags),
-        due_date: s.form.due_date || null,
+        due_date,
       };
       return send.title ? {url: `${API}/tasks?id=eq.${r.id}`, method:'PATCH', headers:J, send, category:'update'} : null;
     }
@@ -418,6 +527,101 @@ function model(sources, actions) {
       method:'DELETE', headers:{'Prefer':'return=representation'}, category:'adelTag'
     }));
 
+  const reminderPayload = ({task, fire, text, tags, apprise_targets}) => {
+    const spec = reminderSpec(fire);
+    if (!spec) return null;
+    return {
+      entity_type:'task',
+      entity_id:String(task.id),
+      title: (`Reminder: ${task.title || ''}`).trim() || 'Reminder',
+      message: (`Reminder for "${task.title || ''}" due ${dueFmt(task.due_date)}`).trim(),
+      tags,
+      apprise_targets,
+      reminder_text: text,
+      spec,
+    };
+  };
+
+  const reminderUpdateReqs = (nextDue, s) => {
+    const reminders = Array.isArray(s.reminders) ? s.reminders : [];
+    const next = toDateTime(nextDue);
+    if (!reminders.length) return [];
+    if (!next || !next.isValid) {
+      return reminders.map(r => {
+        const id = reminderPick(r, 'ReminderId') || r.workflow_id || r.id;
+        return id ? ({url: `${REMINDERS_API}/reminders/${id}`, method:'DELETE', category:'reminderUpdate'}) : null;
+      }).filter(Boolean);
+    }
+
+    return reminders.map(r => {
+      const id = reminderPick(r, 'ReminderId') || r.workflow_id || r.id;
+      const text = reminderPick(r, 'ReminderText') || '';
+      const fire = reminderFireTime(next, text);
+      if (!id || !fire) return null;
+      const tags = reminderArr(r, 'ReminderTags') || (Array.isArray(s.task && s.task.tags) ? s.task.tags : []);
+      const apprise_targets = reminderArr(r, 'ReminderTargets') || targetsForTags(tags, s.alerts);
+      const send = reminderPayload({task: s.task || {}, fire, text, tags, apprise_targets});
+      return send ? ({url: `${REMINDERS_API}/reminders/${id}`, method:'PUT', headers:J, send, category:'reminderUpdate'}) : null;
+    }).filter(Boolean);
+  };
+
+  const reminderRetargetReqs = (changedTags, s, alerts) => {
+    const reminders = Array.isArray(s.reminders) ? s.reminders : [];
+    const due = s.task && s.task.due_date ? s.task.due_date : null;
+    const tagsChanged = Array.isArray(changedTags) ? new Set(changedTags) : changedTags;
+    if (!reminders.length || !tagsChanged || !tagsChanged.size) return [];
+
+    return reminders.map(r => {
+      const tags = reminderArr(r, 'ReminderTags') || [];
+      if (!tags.some(t => tagsChanged.has(t))) return null;
+      const id = reminderPick(r, 'ReminderId') || r.workflow_id || r.id;
+      const text = reminderPick(r, 'ReminderText') || '';
+      const fire = reminderFireTime(due, text);
+      if (!id || !fire) return null;
+      const apprise_targets = targetsForTags(tags, alerts || s.alerts);
+      const send = reminderPayload({task: s.task || {}, fire, text, tags, apprise_targets});
+      return send ? ({url: `${REMINDERS_API}/reminders/${id}`, method:'PUT', headers:J, send, category:'reminderUpdate'}) : null;
+    }).filter(Boolean);
+  };
+
+  const reminderCreateReq$ = actions.reminderSubmit$
+    .compose(sampleCombine(route$, state$))
+    .map(([_, r, s]) => {
+      if (r.page !== 'reminder' || !s.task || s.task.id == null) return null;
+      const text = String(s.reminderForm && s.reminderForm.text || '').trim();
+      const fire = reminderFireTime(s.task.due_date, text);
+      if (!fire) return null;
+      const tags = Array.isArray(s.task.tags) ? s.task.tags : [];
+      const apprise_targets = targetsForTags(tags, s.alerts);
+      const send = reminderPayload({task: s.task, fire, text, tags, apprise_targets});
+      return send ? {url: `${REMINDERS_API}/reminders`, method:'POST', headers:J, send, category:'reminderCreate'} : null;
+    })
+    .filter(Boolean);
+
+  const reminderUpdateReq$ = actions.submitKind$
+    .compose(sampleCombine(route$, state$))
+    .map(([kind, r, s]) => {
+      if (!(kind === 'task' && r.page === 'edit' && r.id != null && s.task)) return [];
+      const prevDue = toZonedISOString(s.task.due_date);
+      const nextDue = toZonedISOString(s.form.due_date);
+      if (prevDue === nextDue) return [];
+      return reminderUpdateReqs(nextDue, s);
+    })
+    .map(xs.fromArray)
+    .flatten();
+
+  const alertsDiff$ = alertsBody$
+    .fold((acc, curr) => ({prev: acc.curr, curr}), {prev: null, curr: null})
+    .filter(acc => acc.prev !== null)
+    .map(({prev, curr}) => ({changed: changedTargetTags(prev, curr), alerts: curr}))
+    .filter(({changed}) => changed.size > 0);
+
+  const reminderRetargetReq$ = alertsDiff$
+    .compose(sampleCombine(state$))
+    .map(([{changed, alerts}, s]) => reminderRetargetReqs(changed, {...s, alerts}, alerts))
+    .map(xs.fromArray)
+    .flatten();
+
   const reloadTrigger$ = xs.merge(
     sources.HTTP.select('mut').flatten().mapTo(true),
     sources.HTTP.select('create').flatten().mapTo(true),
@@ -426,6 +630,8 @@ function model(sources, actions) {
     sources.HTTP.select('acreate').flatten().mapTo(true),
     sources.HTTP.select('amut').flatten().mapTo(true),
     sources.HTTP.select('adelTag').flatten().mapTo(true),
+    sources.HTTP.select('reminderCreate').flatten().mapTo(true),
+    sources.HTTP.select('reminderUpdate').flatten().mapTo(true),
   );
 
   const reloadReq$ = reloadTrigger$
@@ -438,7 +644,8 @@ function model(sources, actions) {
     loadReq$, reloadReq$,
     toggleDoneReq$, reorderReq$, dndParentReq$,
     submitReq$, deleteReq$,
-    acreateReq$, atoggleReq$, adelReq$, adelTagReq$
+    acreateReq$, atoggleReq$, adelReq$, adelTagReq$,
+    reminderCreateReq$, reminderUpdateReq$, reminderRetargetReq$
   );
 
   // ---- post-mutation navigation (tasks + delete-tag) ----
@@ -469,11 +676,15 @@ function model(sources, actions) {
       return backLocFor(r, s.task ? s.task.parent_id : null);
     });
 
+  const reminderNav$ = sources.HTTP.select('reminderCreate').flatten()
+    .compose(sampleCombine(route$, state$))
+    .map(([_, r, s]) => loc(href(r, {page:'task', id: s.task ? s.task.id : r.id, parent:null}), 'push'));
+
   const delTagNav$ = sources.HTTP.select('adelTag').flatten()
     .compose(sampleCombine(route$))
     .map(([_, r]) => loc(href(r, {page:'alerts', atag:null, id:null, parent:null}), 'push'));
 
-  return {state: reducer$, HTTP: http$, History: xs.merge(history$, postNav$, delTagNav$)};
+  return {state: reducer$, HTTP: http$, History: xs.merge(history$, postNav$, delTagNav$, reminderNav$)};
 }
 
 // ---- View helpers ----
@@ -493,6 +704,27 @@ const toggleCols = (r, c) => {
   const next = i >= 0 ? cols.filter(x => x !== c) : cols.concat([c]);
   return next.join(',');
 };
+const remindersForView = rows => (rows || []).map(r => {
+  const sa = r && r.search_attributes ? r.search_attributes : {};
+  const pick = k => {
+    const v = sa[k];
+    if (Array.isArray(v)) return v[0];
+    return v;
+  };
+  const next = pick('ReminderNextFireTime') || r.start_time || '';
+  return {
+    id: pick('ReminderId') || r.workflow_id || next || '',
+    text: pick('ReminderText') || '',
+    next,
+  };
+}).sort((a, b) => {
+  const da = toDateTime(a.next);
+  const db = toDateTime(b.next);
+  if (da && db) return da.toMillis() - db.toMillis();
+  if (da) return -1;
+  if (db) return 1;
+  return 0;
+});
 
 const TopNav = r => div([
   a('.nav', {attrs:{href: href(r, {page:'home', id:null, parent:null, atag:null})}}, 'Tasks'),
@@ -646,6 +878,14 @@ function view(state$) {
         ]);
       }
 
+      if (r.page === 'reminder') {
+        const back = href(r, {page:'task', id: r.id, parent:null});
+        return div('.header', [
+          div([a('.nav', {attrs:{href:back, draggable:'false'}}, '← Back')]),
+          h1(s.task ? `Reminders for ${s.task.title}` : 'Add reminder'),
+        ]);
+      }
+
       if (r.page === 'alerts') return div('.header', [h1('Alerts')]);
       if (r.page === 'alert') return div('.header', [
         div([a('.nav', {attrs:{href: href(r, {page:'alerts', atag:null})}}, '← Back')]),
@@ -670,6 +910,19 @@ function view(state$) {
     const listPage = () => div('.page', [
       r.page === 'home' ? TopNav(r) : null,
       header(),
+      r.page === 'task' ? (() => {
+        const rs = remindersForView(s.reminders);
+        const add = href(r, {page:'reminder', parent:null});
+        return div('.reminders', [
+          h1('Reminders'),
+          div([a('.nav', {attrs:{href: add}}, 'Add reminder')]),
+          rs.length ? h('ul', rs.map(it => h('li', {key: it.id}, [
+            span([dueFmt(it.next) || '(unscheduled)']),
+            span(' — '),
+            span([it.text || '(no text)']),
+          ]))) : div(['No reminders yet.'])
+        ]);
+      })() : null,
       ListControls(r, r.page === 'home' ? newRoot : newChild),
       h('table', [tableHead(), h('tbody', items.map(t => TaskRow(r, t)))]),
       items.length === 0 ? div('.empty', ['No tasks match filters.']) : null,
@@ -680,7 +933,7 @@ function view(state$) {
       div([label(['Title ', input('.ftitle', {attrs:{value: s.form.title || '', required:true}})])]),
       div([label(['Description ', textarea('.fdesc', {attrs:{rows:6}}, s.form.description || '')])]),
       div([label(['Tags ', input('.ftags', {attrs:{placeholder:'tag1 tag2', value: s.form.tags || ''}})])]),
-      div([label(['Due date ', input('.fdue', {attrs:{type:'date', value: s.form.due_date || ''}})])]),
+      div([label(['Due date/time ', input('.fdue', {attrs:{type:'datetime-local', value: toLocalInput(s.form.due_date)}, props:{value: toLocalInput(s.form.due_date)}})])]),
       div('.actions', [
         button('.save', {attrs:{type:'submit'}}, mode === 'new' ? 'Create' : 'Save'),
         mode === 'edit' ? button('.delete', {attrs:{type:'button'}}, 'Delete') : null,
@@ -698,6 +951,20 @@ function view(state$) {
         div('.hint', ['Tip: Enable "reorder" (position) to show ↑/↓. Drag & drop onto a row to make it a child.']),
       ])
     ]);
+
+    const reminderPage = () => {
+      const due = s.task && s.task.due_date ? dueFmt(s.task.due_date) : '';
+      const disabled = !due;
+      return div('.page', [
+        TopNav(r),
+        header(),
+        due ? div([`Due: ${due}`]) : div(['Set a due date before adding reminders.']),
+        form('.reminder-form', [
+          div([label(['Interval before due date ', input('.rtext', {attrs:{placeholder:'e.g. 30 minutes', required:true}, props:{value: s.reminderForm.text || ''}})])]),
+          div([button({attrs:{type:'submit', disabled}}, 'Save reminder')]),
+        ])
+      ]);
+    };
 
     const alertsPage = () => {
       const q = qnorm(r.q);
@@ -765,6 +1032,7 @@ function view(state$) {
     if (r.page === 'new') return newPage();
     if (r.page === 'edit') return editPage();
     if (r.page === 'move') return movePage();
+    if (r.page === 'reminder') return reminderPage();
     if (r.page === 'alerts') return alertsPage();
     if (r.page === 'alert') return alertDetailPage();
     return div('.page', [header()]);

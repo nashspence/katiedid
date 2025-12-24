@@ -16,7 +16,7 @@ create table if not exists api.tasks (
   title       text not null,
   description text not null default '',
   tags        text[] null,
-  due_date    date null,
+  due_date    timestamptz null,
   done        boolean not null default false,
   created_at  timestamptz not null default now(),
   parent_id   bigint null references api.tasks(id) on delete cascade,
@@ -43,7 +43,7 @@ create index if not exists tasks_search_gin on api.tasks using gin (search);
 
 create or replace function api.append_task(
   title text, description text default '', tags text[] default null,
-  due_date date default null, done boolean default false, parent_id bigint default null
+  due_date timestamptz default null, done boolean default false, parent_id bigint default null
 ) returns api.tasks language plpgsql as $$
 declare p bigint := coalesce(parent_id, 0); pos int; r api.tasks;
 begin
