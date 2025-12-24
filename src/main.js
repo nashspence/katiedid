@@ -84,9 +84,11 @@ const toDateTime = v => {
   if (v == null || v === '') return null;
   if (DateTime.isDateTime(v)) return v.isValid ? v : null;
   if (v instanceof Date) return DateTime.fromJSDate(v);
-  const iso = DateTime.fromISO(String(v), {setZone: true});
-  if (iso.isValid) return iso;
-  const local = DateTime.fromISO(String(v), {zone: 'local'});
+  const raw = String(v);
+  const hasZone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(raw);
+  const iso = DateTime.fromISO(raw, {setZone: hasZone});
+  if (iso.isValid) return hasZone ? iso : iso.setZone('local', {keepLocalTime: true});
+  const local = DateTime.fromISO(raw, {zone: 'local'});
   return local.isValid ? local : null;
 };
 const dueFmt = s => {
@@ -123,6 +125,12 @@ const reminderCalendar = dt => ({
   minute:[{start: dt.minute}],
   second:[{start: Math.floor(dt.second)}],
 });
+const reminderFireTime = (due, text) => {
+  const ms = text ? humanInterval(text) : null;
+  const dt = toDateTime(due);
+  if (!dt || !dt.isValid || !ms || !Number.isFinite(ms)) return null;
+  return dt.minus({milliseconds: ms});
+};
 const reminderSpec = fire => {
   const start_at = toZonedISOString(fire);
   return start_at ? {
@@ -301,6 +309,28 @@ function model(sources, actions) {
     }
     return Array.from(set);
   };
+  const targetsMap = rows => {
+    const map = new Map();
+    (rows || []).forEach(x => {
+      if (!x || !x.tag) return;
+      if (!map.has(x.tag)) map.set(x.tag, []);
+      if (x.enabled) map.get(x.tag).push(x.url);
+    });
+    map.forEach((urls, tag) => map.set(tag, Array.from(new Set(urls)).sort()));
+    return map;
+  };
+  const changedTargetTags = (prev, next) => {
+    const before = targetsMap(prev);
+    const after = targetsMap(next);
+    const tags = new Set([...before.keys(), ...after.keys()]);
+    const changed = new Set();
+    tags.forEach(t => {
+      const a = before.get(t) || [];
+      const b = after.get(t) || [];
+      if (a.length !== b.length || a.some((v, i) => v !== b[i])) changed.add(t);
+    });
+    return changed;
+  };
 
   const reqsForRoute = r => {
     if (r.page === 'home') return [{url: listUrl(r, null), method:'GET', category:'list'}];
@@ -345,7 +375,8 @@ function model(sources, actions) {
   const taskFromHTTP$ = selectBody('task', asOne).remember();
   const remindersReducer$ = selectBody('reminders', asArray).map(rows => setKey('reminders', rows));
 
-  const alertsReducer$ = selectBody('alerts', asArray).map(rows => setKey('alerts', rows));
+  const alertsBody$ = selectBody('alerts', asArray);
+  const alertsReducer$ = alertsBody$.map(rows => setKey('alerts', rows));
   const aurlsReducer$ = selectBody('aurls', asArray).map(rows => setKey('alertUrls', rows));
 
   const formInitReducer$ = route$.map(r => prev => {
@@ -525,11 +556,29 @@ function model(sources, actions) {
     return reminders.map(r => {
       const id = reminderPick(r, 'ReminderId') || r.workflow_id || r.id;
       const text = reminderPick(r, 'ReminderText') || '';
-      const ms = text ? humanInterval(text) : null;
-      if (!id || !ms || !Number.isFinite(ms)) return null;
-      const fire = next.minus({milliseconds: ms});
+      const fire = reminderFireTime(next, text);
+      if (!id || !fire) return null;
       const tags = reminderArr(r, 'ReminderTags') || (Array.isArray(s.task && s.task.tags) ? s.task.tags : []);
       const apprise_targets = reminderArr(r, 'ReminderTargets') || targetsForTags(tags, s.alerts);
+      const send = reminderPayload({task: s.task || {}, fire, text, tags, apprise_targets});
+      return send ? ({url: `${REMINDERS_API}/reminders/${id}`, method:'PUT', headers:J, send, category:'reminderUpdate'}) : null;
+    }).filter(Boolean);
+  };
+
+  const reminderRetargetReqs = (changedTags, s, alerts) => {
+    const reminders = Array.isArray(s.reminders) ? s.reminders : [];
+    const due = s.task && s.task.due_date ? s.task.due_date : null;
+    const tagsChanged = Array.isArray(changedTags) ? new Set(changedTags) : changedTags;
+    if (!reminders.length || !tagsChanged || !tagsChanged.size) return [];
+
+    return reminders.map(r => {
+      const tags = reminderArr(r, 'ReminderTags') || [];
+      if (!tags.some(t => tagsChanged.has(t))) return null;
+      const id = reminderPick(r, 'ReminderId') || r.workflow_id || r.id;
+      const text = reminderPick(r, 'ReminderText') || '';
+      const fire = reminderFireTime(due, text);
+      if (!id || !fire) return null;
+      const apprise_targets = targetsForTags(tags, alerts || s.alerts);
       const send = reminderPayload({task: s.task || {}, fire, text, tags, apprise_targets});
       return send ? ({url: `${REMINDERS_API}/reminders/${id}`, method:'PUT', headers:J, send, category:'reminderUpdate'}) : null;
     }).filter(Boolean);
@@ -539,11 +588,9 @@ function model(sources, actions) {
     .compose(sampleCombine(route$, state$))
     .map(([_, r, s]) => {
       if (r.page !== 'reminder' || !s.task || s.task.id == null) return null;
-      const due = toDateTime(s.task.due_date);
       const text = String(s.reminderForm && s.reminderForm.text || '').trim();
-      const ms = text ? humanInterval(text) : null;
-      if (!due || !ms || !Number.isFinite(ms)) return null;
-      const fire = due.minus({milliseconds: ms});
+      const fire = reminderFireTime(s.task.due_date, text);
+      if (!fire) return null;
       const tags = Array.isArray(s.task.tags) ? s.task.tags : [];
       const apprise_targets = targetsForTags(tags, s.alerts);
       const send = reminderPayload({task: s.task, fire, text, tags, apprise_targets});
@@ -560,6 +607,18 @@ function model(sources, actions) {
       if (prevDue === nextDue) return [];
       return reminderUpdateReqs(nextDue, s);
     })
+    .map(xs.fromArray)
+    .flatten();
+
+  const alertsDiff$ = alertsBody$
+    .fold((acc, curr) => ({prev: acc.curr, curr}), {prev: null, curr: null})
+    .filter(acc => acc.prev !== null)
+    .map(({prev, curr}) => ({changed: changedTargetTags(prev, curr), alerts: curr}))
+    .filter(({changed}) => changed.size > 0);
+
+  const reminderRetargetReq$ = alertsDiff$
+    .compose(sampleCombine(state$))
+    .map(([{changed, alerts}, s]) => reminderRetargetReqs(changed, {...s, alerts}, alerts))
     .map(xs.fromArray)
     .flatten();
 
@@ -586,7 +645,7 @@ function model(sources, actions) {
     toggleDoneReq$, reorderReq$, dndParentReq$,
     submitReq$, deleteReq$,
     acreateReq$, atoggleReq$, adelReq$, adelTagReq$,
-    reminderCreateReq$, reminderUpdateReq$
+    reminderCreateReq$, reminderUpdateReq$, reminderRetargetReq$
   );
 
   // ---- post-mutation navigation (tasks + delete-tag) ----
