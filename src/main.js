@@ -80,32 +80,34 @@ const initialState = {
 
 const base = s => (s === undefined ? initialState : s);
 
-const toDateTime = v => {
-  if (v == null || v === '') return null;
-  if (DateTime.isDateTime(v)) return v.isValid ? v : null;
-  if (v instanceof Date) return DateTime.fromJSDate(v);
-  const raw = String(v);
-  const hasZone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(raw);
-  const iso = DateTime.fromISO(raw, {setZone: hasZone});
-  if (iso.isValid) return hasZone ? iso : iso.setZone('local', {keepLocalTime: true});
-  const local = DateTime.fromISO(raw, {zone: 'local'});
-  return local.isValid ? local : null;
+const toUtcDateTime = value => {
+  if (value == null || value === '') return null;
+  if (DateTime.isDateTime(value)) {
+    const dt = value.toUTC();
+    return dt.isValid ? dt : null;
+  }
+  if (value instanceof Date) {
+    const dt = DateTime.fromJSDate(value).toUTC();
+    return dt.isValid ? dt : null;
+  }
+  const dt = DateTime.fromISO(String(value), {setZone: true});
+  return dt.isValid ? dt.toUTC() : null;
+};
+const toUtcISO = v => {
+  const dt = toUtcDateTime(v);
+  return dt ? dt.toISO({suppressMilliseconds: true}) : null;
 };
 const dueFmt = s => {
-  const dt = toDateTime(s);
+  const dt = toUtcDateTime(s);
   return dt ? dt.toLocal().toLocaleString(DateTime.DATETIME_MED) : (s || '');
 };
 const createdFmt = s => {
-  const dt = toDateTime(s);
+  const dt = toUtcDateTime(s);
   return dt ? dt.toLocal().toLocaleString(DateTime.DATETIME_MED) : (s || '');
 };
 const toLocalInput = s => {
-  const dt = toDateTime(s);
+  const dt = toUtcDateTime(s);
   return dt ? dt.toLocal().toFormat("yyyy-LL-dd'T'HH:mm") : '';
-};
-const toZonedISOString = v => {
-  const dt = toDateTime(v);
-  return dt ? dt.toISO({suppressMilliseconds: true}) : null;
 };
 const reminderAttrs = r => (r && r.search_attributes) ? r.search_attributes : {};
 const reminderPick = (r, k) => {
@@ -127,17 +129,18 @@ const reminderCalendar = dt => ({
 });
 const reminderFireTime = (due, text) => {
   const ms = text ? humanInterval(text) : null;
-  const dt = toDateTime(due);
+  const dt = toUtcDateTime(due);
   if (!dt || !dt.isValid || !ms || !Number.isFinite(ms)) return null;
   return dt.minus({milliseconds: ms});
 };
 const reminderSpec = fire => {
-  const start_at = toZonedISOString(fire);
-  return start_at ? {
-    calendars:[reminderCalendar(fire)],
-    time_zone_name: fire.zoneName || DateTime.local().zoneName,
-    start_at,
-  } : null;
+  const start = toUtcDateTime(fire);
+  if (!start) return null;
+  return {
+    calendars:[reminderCalendar(start)],
+    time_zone_name: 'UTC',
+    start_at: start.toISO({suppressMilliseconds: true}),
+  };
 };
 
 function intent(sources) {
@@ -454,7 +457,7 @@ function model(sources, actions) {
 
   const buildSubmitReq = (kind, r, s) => {
     if (kind === 'task' && r.page === 'new') {
-      const due_date = toZonedISOString(s.form.due_date);
+      const due_date = toUtcISO(s.form.due_date);
       const send = {
         title: String(s.form.title || '').trim(),
         description: String(s.form.description || ''),
@@ -466,7 +469,7 @@ function model(sources, actions) {
       return send.title ? {url: `${API}/rpc/append_task`, method:'POST', headers:J, send, category:'create'} : null;
     }
     if (kind === 'task' && r.page === 'edit' && r.id != null) {
-      const due_date = toZonedISOString(s.form.due_date);
+      const due_date = toUtcISO(s.form.due_date);
       const send = {
         title: String(s.form.title || '').trim(),
         description: String(s.form.description || ''),
@@ -544,7 +547,7 @@ function model(sources, actions) {
 
   const reminderUpdateReqs = (nextDue, s) => {
     const reminders = Array.isArray(s.reminders) ? s.reminders : [];
-    const next = toDateTime(nextDue);
+    const next = toUtcDateTime(nextDue);
     if (!reminders.length) return [];
     if (!next || !next.isValid) {
       return reminders.map(r => {
@@ -602,8 +605,8 @@ function model(sources, actions) {
     .compose(sampleCombine(route$, state$))
     .map(([kind, r, s]) => {
       if (!(kind === 'task' && r.page === 'edit' && r.id != null && s.task)) return [];
-      const prevDue = toZonedISOString(s.task.due_date);
-      const nextDue = toZonedISOString(s.form.due_date);
+      const prevDue = toUtcISO(s.task.due_date);
+      const nextDue = toUtcISO(s.form.due_date);
       if (prevDue === nextDue) return [];
       return reminderUpdateReqs(nextDue, s);
     })
@@ -718,8 +721,8 @@ const remindersForView = rows => (rows || []).map(r => {
     next,
   };
 }).sort((a, b) => {
-  const da = toDateTime(a.next);
-  const db = toDateTime(b.next);
+  const da = toUtcDateTime(a.next);
+  const db = toUtcDateTime(b.next);
   if (da && db) return da.toMillis() - db.toMillis();
   if (da) return -1;
   if (db) return 1;
