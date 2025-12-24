@@ -12,6 +12,7 @@
     "@cycle/run": "^5.7.0",
     "@cycle/history": "^9.0.0",
     "@cycle/state": "^1.7.0",
+    "@lesjoursfr/human-interval": "^2.0.1",
     "xstream": "^11.14.0"
   },
   "devDependencies": {

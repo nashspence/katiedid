@@ -2,6 +2,7 @@ import xs from 'xstream';
 import sampleCombine from 'xstream/extra/sampleCombine';
 import {run} from '@cycle/run';
 import {withState} from '@cycle/state';
+import humanInterval from '@lesjoursfr/human-interval';
 import {
   makeDOMDriver, h, div, h1, a, form, label, input, textarea,
   button, select, option, span
@@ -33,7 +34,7 @@ const parseCols = s => {
 
 const parseRoute = search => {
   const qs = new URLSearchParams(search || '');
-  const page = qs.get('page') || 'home';               // home | task | new | edit | move | alerts | alert
+  const page = qs.get('page') || 'home';               // home | task | new | edit | move | alerts | alert | reminder
   const id = num(qs.get('id'));
   const parent = num(qs.get('parent'));
   const atag = (qs.get('atag') || '').trim();          // alert tag detail
@@ -65,8 +66,10 @@ const initialState = {
   route: parseRoute(location.search),
   task: null,
   list: [],
+  reminders: [],
   hasMore: false,
   form: {title:'', description:'', tags:'', due_date:''},
+  reminderForm: {interval:''},
   moveParent: '',
   alerts: [],          // raw rows {tag,url,enabled,created_at}
   alertUrls: [],       // rows for one tag
@@ -183,6 +186,11 @@ function intent(sources) {
     ev('form.anew', 'submit', {preventDefault: true}).mapTo('new'),
     ev('form.aadd', 'submit', {preventDefault: true}).mapTo('add'),
   );
+  const reminderReducer$ = formInput('input.rinterval', 'interval');
+  const reminderSubmit$ = ev('form.reminder-form', 'submit', {preventDefault: true}).mapTo(true);
+  const rdel$ = ev('button.rdel', 'click', {preventDefault: true})
+    .map(e => e.currentTarget.dataset.id)
+    .filter(Boolean);
   const atoggle$ = ev('.atoggle', 'change')
     .map(e => ({tag: e.target.dataset.tag, url: e.target.dataset.url, enabled: e.target.checked}));
   const adel$ = ev('button.adel', 'click', {preventDefault: true})
@@ -195,6 +203,7 @@ function intent(sources) {
     dragstart$, dragover$, dropInto$, dropUp$,
     formReducer$, submitKind$, del$, moveParent$,
     anewReducer$, aaddUrl$, acreate$, atoggle$, adel$, adelTag$,
+    reminderReducer$, reminderSubmit$, rdel$,
   };
 }
 
@@ -250,6 +259,14 @@ function model(sources, actions) {
       return [
         {url: `${API}/tasks?select=${sel}&id=eq.${r.id}`, method:'GET', category:'task'},
         {url: listUrl(r, r.id), method:'GET', category:'list'},
+        {url: `${REMINDERS_API}/reminders?entity_type=task&entity_id=${r.id}&sort=next&limit=100`, method:'GET', category:'reminders'},
+      ];
+    }
+    if (r.page === 'reminder' && r.id != null) {
+      return [
+        {url: `${API}/tasks?select=${sel}&id=eq.${r.id}`, method:'GET', category:'task'},
+        {url: alertsAllUrl(), method:'GET', category:'alerts'},
+        {url: `${REMINDERS_API}/reminders?entity_type=task&entity_id=${r.id}&sort=next&limit=100`, method:'GET', category:'reminders'},
       ];
     }
     if ((r.page === 'edit' || r.page === 'move') && r.id != null) {
@@ -278,12 +295,14 @@ function model(sources, actions) {
 
   const alertsReducer$ = selectBody('alerts', asArray).map(rows => setKey('alerts', rows));
   const aurlsReducer$ = selectBody('aurls', asArray).map(rows => setKey('alertUrls', rows));
+  const remindersReducer$ = selectBody('reminders', asArray).map(rows => setKey('reminders', rows));
 
   const formInitReducer$ = route$.map(r => prev => {
     const s = base(prev);
     if (r.page === 'new') return {...s, form:{title:'', description:'', tags:'', due_date:''}, moveParent:'', task:null};
     if (r.page === 'edit') return {...s, moveParent:''};
     if (r.page === 'move') return s;
+    if (r.page === 'reminder') return {...s, reminderForm:{interval:''}};
     if (r.page === 'alerts') return {...s, anew:{tag:'', url:''}, aaddUrl:'', alertUrls:[]};
     if (r.page === 'alert') return {...s, aaddUrl:''};
     return {...s, moveParent:''};
@@ -314,15 +333,20 @@ function model(sources, actions) {
     return {...s, anew: reducer(s.anew)};
   });
 
+  const reminderInputReducer$ = actions.reminderReducer$.map(reducer => prev => {
+    const s = base(prev);
+    return {...s, reminderForm: reducer(s.reminderForm)};
+  });
+
   const aaddUrlReducer$ = actions.aaddUrl$.map(v => setKey('aaddUrl', v));
   const moveParentReducer$ = actions.moveParent$.map(v => setKey('moveParent', v));
 
   const reducer$ = xs.merge(
     initReducer$, routeReducer$, listReducer$, taskReducer$,
-    alertsReducer$, aurlsReducer$,
+    alertsReducer$, aurlsReducer$, remindersReducer$,
     formInitReducer$, formFromTaskReducer$, moveFromTaskReducer$,
     formInputReducer$, moveParentReducer$,
-    anewInputReducer$, aaddUrlReducer$,
+    anewInputReducer$, aaddUrlReducer$, reminderInputReducer$,
   );
 
   // ---- History ----
@@ -412,11 +436,59 @@ function model(sources, actions) {
       method:'DELETE', headers:{'Prefer':'return=representation'}, category:'amut'
     }));
 
+  const rdelReq$ = actions.rdel$
+    .map(id => ({
+      url: `${REMINDERS_API}/reminders/${encodeURIComponent(id)}`,
+      method:'DELETE', headers:{'Prefer':'return=representation'}, category:'rdel'
+    }));
+
   const adelTagReq$ = actions.adelTag$
     .map(({tag}) => ({
       url: `${API}/apprise_targets?tag=eq.${encodeURIComponent(tag)}`,
       method:'DELETE', headers:{'Prefer':'return=representation'}, category:'adelTag'
     }));
+
+  const reminderReq$ = actions.reminderSubmit$
+    .compose(sampleCombine(state$, route$))
+    .map(([_, s, r]) => {
+      if (r.page !== 'reminder' || !s.task || !s.task.due_date) return null;
+      const iv = humanInterval(s.reminderForm.interval || '');
+      if (!iv || !Number.isFinite(iv)) return null;
+      const due = new Date(s.task.due_date);
+      if (!due || isNaN(due)) return null;
+      const fire = new Date(due.getTime() - iv);
+      if (!fire || isNaN(fire)) return null;
+      const tags = Array.isArray(s.task.tags) ? s.task.tags : [];
+      const urls = (s.alerts || []).filter(x => tags.includes(x.tag)).map(x => x.url).filter(Boolean);
+      const spec = {
+        calendars: [{
+          year: [{start: fire.getUTCFullYear()}],
+          month: [{start: fire.getUTCMonth() + 1}],
+          day_of_month: [{start: fire.getUTCDate()}],
+          hour: [{start: fire.getUTCHours()}],
+          minute: [{start: fire.getUTCMinutes()}],
+          second: [{start: fire.getUTCSeconds()}],
+        }],
+        time_zone_name: 'UTC',
+      };
+      return {
+        url: `${REMINDERS_API}/reminders`,
+        method:'POST',
+        headers:J,
+        send:{
+          entity_type:'task',
+          entity_id:String(s.task.id),
+          title: s.task.title || '',
+          message: s.task.description || '',
+          tags,
+          apprise_targets: urls,
+          text: s.reminderForm.interval || '',
+          spec,
+        },
+        category:'rcreate'
+      };
+    })
+    .filter(Boolean);
 
   const reloadTrigger$ = xs.merge(
     sources.HTTP.select('mut').flatten().mapTo(true),
@@ -426,6 +498,8 @@ function model(sources, actions) {
     sources.HTTP.select('acreate').flatten().mapTo(true),
     sources.HTTP.select('amut').flatten().mapTo(true),
     sources.HTTP.select('adelTag').flatten().mapTo(true),
+    sources.HTTP.select('rcreate').flatten().mapTo(true),
+    sources.HTTP.select('rdel').flatten().mapTo(true),
   );
 
   const reloadReq$ = reloadTrigger$
@@ -438,7 +512,7 @@ function model(sources, actions) {
     loadReq$, reloadReq$,
     toggleDoneReq$, reorderReq$, dndParentReq$,
     submitReq$, deleteReq$,
-    acreateReq$, atoggleReq$, adelReq$, adelTagReq$
+    acreateReq$, atoggleReq$, adelReq$, adelTagReq$, reminderReq$, rdelReq$
   );
 
   // ---- post-mutation navigation (tasks + delete-tag) ----
@@ -469,11 +543,15 @@ function model(sources, actions) {
       return backLocFor(r, s.task ? s.task.parent_id : null);
     });
 
+  const reminderNav$ = sources.HTTP.select('rcreate').flatten()
+    .compose(sampleCombine(route$, state$))
+    .map(([_, r, s]) => loc(href(r, {page:'task', parent:null}), 'push'));
+
   const delTagNav$ = sources.HTTP.select('adelTag').flatten()
     .compose(sampleCombine(route$))
     .map(([_, r]) => loc(href(r, {page:'alerts', atag:null, id:null, parent:null}), 'push'));
 
-  return {state: reducer$, HTTP: http$, History: xs.merge(history$, postNav$, delTagNav$)};
+  return {state: reducer$, HTTP: http$, History: xs.merge(history$, postNav$, delTagNav$, reminderNav$)};
 }
 
 // ---- View helpers ----
@@ -499,6 +577,24 @@ const TopNav = r => div([
   span(' | '),
   a('.nav', {attrs:{href: href(r, {page:'alerts', id:null, parent:null, atag:null})}}, 'Alerts'),
 ]);
+
+const reminderText = sa => {
+  const v = sa && sa.ReminderText;
+  if (Array.isArray(v)) return v[0] || '';
+  return v || '';
+};
+
+const reminderId = sa => {
+  const v = sa && (sa.ReminderId || sa.reminder_id);
+  if (Array.isArray(v)) return v[0] || '';
+  return v || '';
+};
+
+const reminderNext = sa => {
+  const v = sa && sa.ReminderNextFireTime;
+  if (Array.isArray(v)) return v[0] || null;
+  return v || null;
+};
 
 function TaskRow(r, t) {
   const toTask = href(r, {page:'task', id: t.id});
@@ -613,7 +709,11 @@ function view(state$) {
             created ? div([created]) : null,
             div([tagStr]),
           ]) : null,
-          div('.actions', [t ? a('.nav', {attrs:{href:editLink(t), draggable:'false'}}, 'Edit') : null]),
+          div('.actions', [
+            t ? a('.nav', {attrs:{href:editLink(t), draggable:'false'}}, 'Edit') : null,
+            t ? span(' ') : null,
+            t ? a('.nav', {attrs:{href: href(r, {page:'reminder'}), draggable:'false'}}, 'Add reminder') : null,
+          ]),
         ]);
       }
 
@@ -646,6 +746,14 @@ function view(state$) {
         ]);
       }
 
+      if (r.page === 'reminder') {
+        const back = href(r, {page:'task'});
+        return div('.header', [
+          div([a('.nav', {attrs:{href:back, draggable:'false'}}, '← Back')]),
+          h1('Add reminder'),
+        ]);
+      }
+
       if (r.page === 'alerts') return div('.header', [h1('Alerts')]);
       if (r.page === 'alert') return div('.header', [
         div([a('.nav', {attrs:{href: href(r, {page:'alerts', atag:null})}}, '← Back')]),
@@ -667,9 +775,35 @@ function view(state$) {
       ].filter(Boolean))
     ]);
 
+    const remindersPanel = (allowDelete = false) => {
+      if (r.page !== 'task' && r.page !== 'reminder') return null;
+      const rems = (s.reminders || []).slice().sort((a, b) => {
+        const an = reminderNext(a.search_attributes);
+        const bn = reminderNext(b.search_attributes);
+        if (!an && !bn) return 0;
+        if (!an) return 1;
+        if (!bn) return -1;
+        return new Date(an) - new Date(bn);
+      });
+      return div('.reminders', [
+        h('h2', 'Reminders'),
+        rems.length ? h('ul', rems.map(rm => {
+          const next = reminderNext(rm.search_attributes);
+          const text = reminderText(rm.search_attributes);
+          const rid = reminderId(rm.search_attributes);
+          return h('li', {key: rm.workflow_id}, [
+            div([text || '(no text)']),
+            div([next ? createdFmt(next) : 'unscheduled']),
+            allowDelete && rid ? button('.rdel', {attrs:{type:'button', 'data-id': rid}}, 'Delete') : null,
+          ].filter(Boolean));
+        })) : div('.empty', ['No reminders.']),
+      ]);
+    };
+
     const listPage = () => div('.page', [
       r.page === 'home' ? TopNav(r) : null,
       header(),
+      r.page === 'task' ? remindersPanel() : null,
       ListControls(r, r.page === 'home' ? newRoot : newChild),
       h('table', [tableHead(), h('tbody', items.map(t => TaskRow(r, t)))]),
       items.length === 0 ? div('.empty', ['No tasks match filters.']) : null,
@@ -761,12 +895,24 @@ function view(state$) {
       ]),
     ]);
 
+    const reminderPage = () => div('.page', [
+      TopNav(r),
+      header(),
+      remindersPanel(true),
+      s.task ? div('.hint', [`Task due ${s.task.due_date ? dueFmt(s.task.due_date) : 'no due date set'}`]) : null,
+      form('.reminder-form', [
+        div([label(['Interval before due ', input('.rinterval', {attrs:{value: s.reminderForm.interval || '', placeholder:'e.g. 1 day before', required:true}})])]),
+        div('.actions', [button({attrs:{type:'submit', disabled: !(s.task && s.task.due_date)}}, 'Save reminder')])
+      ]),
+    ]);
+
     if (r.page === 'home' || r.page === 'task') return listPage();
     if (r.page === 'new') return newPage();
     if (r.page === 'edit') return editPage();
     if (r.page === 'move') return movePage();
     if (r.page === 'alerts') return alertsPage();
     if (r.page === 'alert') return alertDetailPage();
+    if (r.page === 'reminder') return reminderPage();
     return div('.page', [header()]);
   });
 }
