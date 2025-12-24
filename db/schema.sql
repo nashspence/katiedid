@@ -8,7 +8,7 @@ create table if not exists api.app_config (
 );
 
 insert into api.app_config(key, value)
-values ('apprise_endpoint', :'apprise_endpoint')
+values ('apprise_endpoint', '${apprise_endpoint}')
 on conflict (key) do update set value = excluded.value;
 
 create table if not exists api.tasks (

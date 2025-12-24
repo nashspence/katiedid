@@ -4,20 +4,34 @@ services:
     image: supabase/postgres:17.6.1.057
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      APPRISE_ENDPOINT: ${APPRISE_ENDPOINT:-http://apprise-api:8000/notify/}
     volumes:
       - db:/var/lib/postgresql/data
-      - ./db/init.sh:/docker-entrypoint-initdb.d/zz_00_init.sh:ro
-      - ./db/schema.sql:/schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -h localhost -p 5432"]
       interval: 5s
       timeout: 5s
       retries: 30
+  db-migrations:
+    build:
+      context: .
+      dockerfile: db/flyway.Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      FLYWAY_URL: jdbc:postgresql://db:5432/postgres
+      FLYWAY_USER: postgres
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      FLYWAY_PLACEHOLDERS_APPRISE_ENDPOINT: ${APPRISE_ENDPOINT:-http://apprise-api:8000/notify/}
+    command: migrate
+    restart: "no"
   api:
     image: postgrest/postgrest:v14.1
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
     environment:
       PGRST_DB_URI: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
       PGRST_DB_SCHEMAS: api

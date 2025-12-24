@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${APPRISE_ENDPOINT:=http://apprise-api:8000/notify/}"
+apprise_endpoint="${APPRISE_ENDPOINT:-http://apprise-api:8000/notify/}"
+export apprise_endpoint
 
-psql -v ON_ERROR_STOP=1 \
-  --username postgres --dbname postgres \
-  -v apprise_endpoint="$APPRISE_ENDPOINT" \
-  -f /schema.sql
+envsubst < /schema.sql | \
+  psql -v ON_ERROR_STOP=1 --username postgres --dbname postgres
