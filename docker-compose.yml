@@ -2,6 +2,7 @@
 services:
   db:
     image: supabase/postgres:17.6.1.057
+    restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     volumes:
@@ -11,46 +12,47 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
-  db-migrations:
+  migrations:
     build:
       context: .
       dockerfile: db/flyway.Dockerfile
     depends_on:
       db:
         condition: service_healthy
-      api:
-        condition: service_started
     environment:
       FLYWAY_URL: jdbc:postgresql://db:5432/postgres
       FLYWAY_USER: postgres
       FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      FLYWAY_PLACEHOLDERS_APPRISE_ENDPOINT: ${APPRISE_ENDPOINT:-http://apprise-api:8000/notify/}
+      FLYWAY_PLACEHOLDERS_NOTIFICATIONS_ENDPOINT: ${NOTIFICATIONS_ENDPOINT:-http://notifications:8000/notify/}
     command: migrate
     restart: "no"
-  api:
+  tasks-api:
     image: postgrest/postgrest:v14.1
     depends_on:
-      db:
-        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
     environment:
       PGRST_DB_URI: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
       PGRST_DB_SCHEMAS: api
       PGRST_DB_ANON_ROLE: anon
       PGRST_SERVER_PORT: 3000
-  apprise-api:
+  notifications:
     image: caronc/apprise:latest
-  ui:
+    restart: unless-stopped
+  web:
     build: .
     depends_on:
-      db-migrations:
+      migrations:
         condition: service_completed_successfully
-      api:
+      tasks-api:
         condition: service_started
     environment:
       TZ: America/Los_Angeles
     ports:
       - '8082:80'
-  temporal:
+    restart: unless-stopped
+  scheduler:
     image: temporalio/auto-setup:1.29.1
     depends_on:
       db:
@@ -63,51 +65,63 @@ services:
       - POSTGRES_PWD=${POSTGRES_PASSWORD:-postgres}
       - DBNAME=temporal
       - VISIBILITY_DBNAME=temporal_visibility
-  temporal-ui:
+    restart: unless-stopped
+  scheduler-ui:
     image: temporalio/ui:2.43.3
-    depends_on: [temporal]
+    depends_on: [scheduler]
     environment:
-      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_ADDRESS=scheduler:7233
     ports: ["8081:8080"]
-  temporal-init:
+    restart: unless-stopped
+  scheduler-setup:
     image: temporalio/admin-tools:1.29.1-tctl-1.18.4-cli-1.5.0
-    depends_on: [temporal]
+    depends_on: [scheduler]
     entrypoint: ["/bin/sh","-c"]
     command: >
       "
       set -e;
-      for i in $(seq 1 60); do temporal operator cluster health --address temporal:7233 && break || sleep 1; done;
+      for i in $(seq 1 60); do temporal operator cluster health --address scheduler:7233 && break || sleep 1; done;
 
-      temporal operator search-attribute create --address temporal:7233 -n default --name ReminderId --type Keyword || true;
-      temporal operator search-attribute create --address temporal:7233 -n default --name ReminderTags --type KeywordList || true;
-      temporal operator search-attribute create --address temporal:7233 -n default --name ReminderTitle --type Keyword || true;
-      temporal operator search-attribute create --address temporal:7233 -n default --name ReminderText --type Text || true;
-      temporal operator search-attribute create --address temporal:7233 -n default --name ReminderNextFireTime --type Datetime || true;
-      temporal operator search-attribute create --address temporal:7233 -n default --name ReminderEntityType --type Keyword || true;
-      temporal operator search-attribute create --address temporal:7233 -n default --name ReminderEntityId --type Keyword || true;
-      temporal operator search-attribute create --address temporal:7233 -n default --name ReminderTargets --type KeywordList || true;
-      temporal operator search-attribute create --address temporal:7233 -n default --name ReminderScheduleId --type Keyword || true;
-      temporal operator search-attribute create --address temporal:7233 -n default --name ReminderRecordWorkflowId --type Keyword || true;
+      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderId --type Keyword || true;
+      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderTags --type KeywordList || true;
+      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderTitle --type Keyword || true;
+      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderText --type Text || true;
+      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderNextFireTime --type Datetime || true;
+      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderEntityType --type Keyword || true;
+      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderEntityId --type Keyword || true;
+      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderTargets --type KeywordList || true;
+      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderScheduleId --type Keyword || true;
+      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderRecordWorkflowId --type Keyword || true;
 
       echo done.
       "
     restart: "no"
-  reminders:
+  reminders-api:
     build: ./reminders
-    depends_on: [temporal]
+    depends_on:
+      scheduler:
+        condition: service_started
+      scheduler-setup:
+        condition: service_completed_successfully
     environment:
-      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_ADDRESS=scheduler:7233
       - TEMPORAL_NAMESPACE=default
       - TASK_QUEUE=reminders
     ports: ["8083:8000"]
     command: ["uvicorn", "reminder_api:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
   reminders-worker:
     build: ./reminders
-    depends_on: [temporal]
+    depends_on:
+      scheduler:
+        condition: service_started
+      scheduler-setup:
+        condition: service_completed_successfully
     environment:
-      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_ADDRESS=scheduler:7233
       - TEMPORAL_NAMESPACE=default
       - TASK_QUEUE=reminders
     command: ["python", "-u", "reminder_worker.py"]
+    restart: unless-stopped
 volumes:
   db: null

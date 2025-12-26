@@ -8,7 +8,7 @@ create table if not exists api.app_config (
 );
 
 insert into api.app_config(key, value)
-values ('apprise_endpoint', '${apprise_endpoint}')
+values ('notifications_endpoint', '${notifications_endpoint}')
 on conflict (key) do update set value = excluded.value;
 
 create table if not exists api.tasks (
@@ -150,7 +150,7 @@ create index if not exists apprise_targets_tag_enabled_idx on api.apprise_target
 create or replace function api._apprise_notify(tag text, title text, body text, type text default 'info')
 returns bigint language plpgsql as $$
 declare urls text;
-declare endpoint text := coalesce((select value from api.app_config where key='apprise_endpoint'), 'http://apprise-api:8000/notify/');
+declare endpoint text := coalesce((select value from api.app_config where key='notifications_endpoint'), 'http://notifications:8000/notify/');
 begin
   select string_agg(t.url, ' ') into urls
     from api.apprise_targets t
