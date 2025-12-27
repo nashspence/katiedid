@@ -272,12 +272,12 @@ function model(sources, actions) {
       title:t.title||'',
       description:t.description||'',
       tags:(t.tags||[]).join(' '),
-      dueDate: toLocalInput(t.dueDate||''),
+      dueDate: toLocalInput(t.due_date||''),
     }}));
 
   const moveFromTaskR$ = xs.combine(route$, pickBody('task').startWith(null))
     .filter(([r,t]) => r.page === 'move' && t && t.id === r.id)
-    .map(([_,t]) => setKey('moveParent', t.parentId == null ? '' : String(t.parentId)));
+    .map(([_,t]) => setKey('moveParent', t.parent_id == null ? '' : String(t.parent_id)));
 
   const formInputR$ = actions.formReducer$.map(fn => prev => ({...base(prev), form: fn(base(prev).form)}));
   const anewInputR$ = actions.anewReducer$.map(fn => prev => ({...base(prev), anew: fn(base(prev).anew)}));
@@ -428,8 +428,9 @@ function model(sources, actions) {
     .compose(sampleCombine(route$, state$))
     .map(([{kind,res}, r, s]) => {
       const body = res && res.body ? res.body : null;
-      if ((kind === 'create' || kind === 'update') && body && body.parentId !== undefined) return backLocFor(r, body.parentId);
-      return backLocFor(r, s.task ? s.task.parentId : null);
+      const bodyParent = body ? body.parent_id : undefined;
+      if ((kind === 'create' || kind === 'update') && bodyParent !== undefined) return backLocFor(r, bodyParent);
+      return backLocFor(r, s.task ? s.task.parent_id : null);
     });
 
   const reminderNav$ = sources.HTTP.select('reminderCreate').flatten()
@@ -469,7 +470,7 @@ const TopNav = r => div([
 
 function TaskRow(r, t) {
   const toTask = href(r, {page:'task', id:t.id});
-  const pid = t.parentId == null ? 'null' : String(t.parentId);
+  const pid = t.parent_id == null ? 'null' : String(t.parent_id);
   const showArrows = !!r.reorder && r.sort === 'position';
   const on = colSet(r);
 
@@ -484,9 +485,9 @@ function TaskRow(r, t) {
     on.has('done') ? h('td',[input('.toggle',{attrs:{type:'checkbox','data-id':t.id}, props:{checked:!!t.done}})]) : null,
     on.has('position') ? h('td',[String(t.position == null ? '' : t.position)]) : null,
     on.has('title') ? cellTitle : null,
-    on.has('due') ? h('td',[dtFmt(t.dueDate)]) : null,
+    on.has('due') ? h('td',[dtFmt(t.due_date)]) : null,
     on.has('tags') ? h('td',[(t.tags || []).join(' ')]) : null,
-    on.has('created') ? h('td',[dtFmt(t.createdAt)]) : null,
+    on.has('created') ? h('td',[dtFmt(t.created_at)]) : null,
   ].filter(Boolean));
 }
 
@@ -558,15 +559,15 @@ function view(state$) {
       if (r.page === 'task') {
         const t = s.task;
         const title = t ? t.title : `Task #${r.id ?? ''}`;
-        const upId = t ? t.parentId : null;
+        const upId = t ? t.parent_id : null;
 
         const upHref = upId == null
           ? href(r,{page:'home',id:null,parent:null})
           : href(r,{page:'task',id:upId});
 
         const upLabel = upId == null ? '← Back to Tasks' : '← Up one level';
-        const due = t && t.dueDate ? `due ${dtFmt(t.dueDate)}` : 'no due';
-        const created = t && t.createdAt ? `created ${dtFmt(t.createdAt)}` : null;
+        const due = t && t.due_date ? `due ${dtFmt(t.due_date)}` : 'no due';
+        const created = t && t.created_at ? `created ${dtFmt(t.created_at)}` : null;
         const tagStr = t && t.tags && t.tags.length ? `tags: ${t.tags.join(', ')}` : 'no tags';
 
         return div('.header', [
@@ -605,7 +606,7 @@ function view(state$) {
       }
 
       if (r.page === 'move') {
-        const pid = s.task ? s.task.parentId : null;
+        const pid = s.task ? s.task.parent_id : null;
         const back = pid == null ? href(r,{page:'home',id:null,parent:null}) : href(r,{page:'task',id:pid});
         return div('.header', [
           div([a('.nav',{attrs:{href:back,draggable:'false'}}, '← Back')]),
@@ -689,7 +690,7 @@ function view(state$) {
     ]);
 
     const reminderPage = () => {
-      const due = s.task && s.task.dueDate ? dtFmt(s.task.dueDate) : '';
+      const due = s.task && s.task.due_date ? dtFmt(s.task.due_date) : '';
       const disabled = !due;
       return div('.page', [
         TopNav(r),
@@ -712,7 +713,7 @@ function view(state$) {
         const it = map.get(tag);
         it.n += 1;
         if (x.enabled) it.en += 1;
-        const c = x.createdAt || x.created_at;
+        const c = x.created_at;
         const d = c ? new Date(c) : null;
         if (d && !isNaN(d) && (!it.latest || d > it.latest)) it.latest = d;
       });
@@ -748,7 +749,7 @@ function view(state$) {
       h('table', [
         h('thead',[h('tr',[h('th','On'),h('th','URL'),h('th','Created'),h('th','')])]),
         h('tbody', (s.alertUrls||[]).map(x => {
-          const c = x.createdAt || x.created_at;
+          const c = x.created_at;
           return h('tr',{key:`${x.tag}|${x.url}`}, [
             h('td',[input('.atoggle',{attrs:{type:'checkbox','data-tag':x.tag,'data-url':x.url}, props:{checked:!!x.enabled}})]),
             h('td',[x.url||'']),
