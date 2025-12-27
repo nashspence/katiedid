@@ -28,7 +28,7 @@ services:
       FLYWAY_URL: jdbc:postgresql://db:5432/postgres
       FLYWAY_USER: postgres
       FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      FLYWAY_PLACEHOLDERS_NOTIFICATIONS_ENDPOINT: ${NOTIFICATIONS_ENDPOINT:-http://notifications:8000/notify/}
+      FLYWAY_PLACEHOLDERS_NOTIFICATIONS_ENDPOINT: http://notifications:8000/notify/
     command: migrate
     restart: "no"
 
@@ -38,35 +38,31 @@ services:
       db:
         condition: service_healthy
     environment:
-      - DB=postgres12
-      - DB_PORT=5432
-      - POSTGRES_SEEDS=db
-      - POSTGRES_USER=postgres
-      - POSTGRES_PWD=${POSTGRES_PASSWORD:-postgres}
-      - DBNAME=temporal
-      - VISIBILITY_DBNAME=temporal_visibility
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: db
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-postgres}
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      BIND_ON_IP: 0.0.0.0
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "tctl", "cluster", "health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   scheduler-ui:
     image: temporalio/ui:2.43.3
-    depends_on: [scheduler]
-    environment:
-      - TEMPORAL_ADDRESS=scheduler:7233
-    ports: ["8081:8080"]
-    restart: unless-stopped
-
-  scheduler-worker:
-    build: ./api
     depends_on:
       scheduler:
-        condition: service_started
-      scheduler-setup:
-        condition: service_completed_successfully
+        condition: service_healthy
     environment:
-      - TEMPORAL_ADDRESS=scheduler:7233
-      - TEMPORAL_NAMESPACE=default
-      - TASK_QUEUE=reminders
-    command: ["python", "-u", "reminder_worker.py"]
+      TEMPORAL_ADDRESS: scheduler:7233
+    ports:
+      - "8081:8080"
     restart: unless-stopped
 
   api:
@@ -74,27 +70,44 @@ services:
     depends_on:
       migrations:
         condition: service_completed_successfully
+      scheduler:
+        condition: service_healthy
     restart: unless-stopped
     environment:
-      PORT: "80"
       PGRST_DB_URI: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
-      PGRST_DB_SCHEMA: "public"
-      PGRST_DB_ANON_ROLE: "anon"
-      TEMPORAL_ADDRESS: "temporal:7233"
-      TEMPORAL_NAMESPACE: "default"
-      TASK_QUEUE: "reminders"
-  
+      TEMPORAL_ADDRESS: scheduler:7233
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/healthz"]
+      interval: 10s
+      timeout: 2s
+      retries: 5
+      start_period: 10s
+
+
+  scheduler-worker:
+    build: ./api
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: scheduler:7233
+      NOTIFICATIONS_ENDPOINT: http://notifications:8000/notify/
+    command: ["python", "-u", "reminder_worker.py"]
+    restart: unless-stopped
+
   web:
     build: ./web
     depends_on:
-      migrations:
-        condition: service_completed_successfully
-      tasks-api:
+      api:
+        condition: service_healthy
+      scheduler-worker:
         condition: service_started
     environment:
       TZ: America/Los_Angeles
+      API_UPSTREAM: http://api:80/
     ports:
-      - '8082:80'
+      - "8082:80"
     restart: unless-stopped
+
 volumes:
   db: null

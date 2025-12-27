@@ -20,7 +20,7 @@ EOF
 
 cat >/tmp/postgrest.conf <<EOF
 db-uri = "${PGRST_DB_URI:?set PGRST_DB_URI}"
-db-schema = "${PGRST_DB_SCHEMA:-public}"
+db-schema = "${PGRST_DB_SCHEMA:-api}"
 db-anon-role = "${PGRST_DB_ANON_ROLE:-anon}"
 server-host = "127.0.0.1"
 server-port = 3000

@@ -9,7 +9,7 @@ import {
 import {makeHTTPDriver} from '@cycle/http';
 import {makeHistoryDriver} from '@cycle/history';
 
-const API_BASE = (typeof process !== 'undefined' && process.env && process.env.API_BASE) ? process.env.API_BASE : 'http://localhost:8080';
+const API_BASE = '/api';
 const MAXPOS = 2147483647;
 
 const DEFAULT_COLS = ['done','title','due','tags'];
@@ -216,8 +216,8 @@ function model(sources, actions) {
     if (r.tags) qs.set('tags', r.tags);
     qs.set('sort', r.sort || 'position');
     qs.set('dir', r.dir || 'asc');
-    if (r.page === 'home') qs.set('parentId', '');
-    else if (r.page === 'task' && r.id != null) qs.set('parentId', String(r.id));
+    // IMPORTANT: omit parentId for root (don't send empty string)
+    if (r.page === 'task' && r.id != null) qs.set('parentId', String(r.id));
     return `${API_BASE}/tasks?${qs.toString()}`;
   };
 
@@ -559,7 +559,11 @@ function view(state$) {
         const t = s.task;
         const title = t ? t.title : `Task #${r.id ?? ''}`;
         const upId = t ? t.parentId : null;
-        const upHref = upId == null ? href(r,{page:'home',id:null,parent:null}) : href(r,{page:'task',id:upId});
+
+        const upHref = upId == null
+          ? href(r,{page:'home',id:null,parent:null})
+          : href(r,{page:'task',id:upId});
+
         const upLabel = upId == null ? '← Back to Tasks' : '← Up one level';
         const due = t && t.dueDate ? `due ${dtFmt(t.dueDate)}` : 'no due';
         const created = t && t.createdAt ? `created ${dtFmt(t.createdAt)}` : null;
@@ -581,24 +585,40 @@ function view(state$) {
       }
 
       if (r.page === 'new') {
-        const back = (r.parent == null) ? href(r,{page:'home',id:null,parent:null}) : href(r,{page:'task',id:r.parent});
-        return div('.header', [div([a('.nav',{attrs:{href:back,draggable:'false'}}, '← Cancel')]), h1(r.parent == null ? 'New root task' : `New subtask of #${r.parent}`)]);
+        const back = (r.parent == null)
+          ? href(r,{page:'home',id:null,parent:null})
+          : href(r,{page:'task',id:r.parent});
+        return div('.header', [
+          div([a('.nav',{attrs:{href:back,draggable:'false'}}, '← Cancel')]),
+          h1(r.parent == null ? 'New root task' : `New subtask of #${r.parent}`),
+        ]);
       }
 
       if (r.page === 'edit') {
-        const back = (r.id != null) ? href(r,{page:'task',id:r.id,parent:null}) : href(r,{page:'home',id:null,parent:null});
-        return div('.header', [div([a('.nav',{attrs:{href:back,draggable:'false'}}, '← Back')]), h1(s.task ? `Edit: ${s.task.title}` : 'Edit task')]);
+        const back = (r.id != null)
+          ? href(r,{page:'task',id:r.id,parent:null})
+          : href(r,{page:'home',id:null,parent:null});
+        return div('.header', [
+          div([a('.nav',{attrs:{href:back,draggable:'false'}}, '← Back')]),
+          h1(s.task ? `Edit: ${s.task.title}` : 'Edit task'),
+        ]);
       }
 
       if (r.page === 'move') {
         const pid = s.task ? s.task.parentId : null;
         const back = pid == null ? href(r,{page:'home',id:null,parent:null}) : href(r,{page:'task',id:pid});
-        return div('.header', [div([a('.nav',{attrs:{href:back,draggable:'false'}}, '← Back')]), h1(s.task ? `Move: ${s.task.title}` : 'Move task')]);
+        return div('.header', [
+          div([a('.nav',{attrs:{href:back,draggable:'false'}}, '← Back')]),
+          h1(s.task ? `Move: ${s.task.title}` : 'Move task'),
+        ]);
       }
 
       if (r.page === 'reminder') {
         const back = href(r,{page:'task', id:r.id, parent:null});
-        return div('.header', [div([a('.nav',{attrs:{href:back,draggable:'false'}}, '← Back')]), h1(s.task ? `Reminders for ${s.task.title}` : 'Add reminder')]);
+        return div('.header', [
+          div([a('.nav',{attrs:{href:back,draggable:'false'}}, '← Back')]),
+          h1(s.task ? `Reminders for ${s.task.title}` : 'Add reminder'),
+        ]);
       }
 
       if (r.page === 'alerts') return div('.header',[h1('Alerts')]);
@@ -630,8 +650,8 @@ function view(state$) {
           h1('Reminders'),
           div([a('.nav',{attrs:{href:add}}, 'Add reminder')]),
           rs.length ? h('ul', rs.map(it => {
-            const next = it.nextFireTime || it.next_fire_time || it.next_fire_time_utc || it.next || '';
-            return h('li',{key:it.id}, [
+            const next = it.nextFireTime || it.next_fire_time || it.next || '';
+            return h('li',{key:it.id || next}, [
               span([dtFmt(next) || '(unscheduled)']),
               span(' — '),
               span([it.text || it.before || '(no text)']),

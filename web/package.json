@@ -7,13 +7,11 @@
     "build": "parcel build src/index.html --dist-dir dist --public-url ."
   },
   "dependencies": {
-    "@lesjoursfr/human-interval": "^2.0.2",
     "@cycle/dom": "^23.1.0",
     "@cycle/http": "^15.4.0",
     "@cycle/run": "^5.7.0",
     "@cycle/history": "^9.0.0",
     "@cycle/state": "^1.7.0",
-    "luxon": "^3.7.2",
     "xstream": "^11.14.0"
   },
   "devDependencies": {

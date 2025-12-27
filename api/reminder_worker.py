@@ -8,8 +8,9 @@ from temporalio import activity, workflow
 from temporalio.client import Client
 
 TASK_QUEUE = os.getenv("TASK_QUEUE", "reminders")
-TEMPORAL_ADDRESS = os.getenv("TEMPORAL_ADDRESS", "localhost:7233")
+TEMPORAL_ADDRESS = os.getenv("TEMPORAL_ADDRESS", "scheduler:7233")
 TEMPORAL_NAMESPACE = os.getenv("TEMPORAL_NAMESPACE", "default")
+NOTIFICATIONS_ENDPOINT = os.getenv("NOTIFICATIONS_ENDPOINT", "http://notifications:8000/notify/")
 
 
 @dataclass
@@ -85,7 +86,6 @@ class RecordWorkflow:
 
 
 @activity.defn
-@activity.defn
 async def send_apprise(payload: Dict[str, Any]) -> bool:
     import os, json, asyncio
     from urllib import request
@@ -94,7 +94,7 @@ async def send_apprise(payload: Dict[str, Any]) -> bool:
     if not targets:
         return True
 
-    ep = os.environ["NOTIFICATIONS_ENDPOINT"].rstrip("/")
+    ep = NOTIFICATIONS_ENDPOINT.rstrip("/")
     url = ep if ep.endswith("/notify") or "/notify/" in ep else ep + "/notify"
 
     data = json.dumps({
