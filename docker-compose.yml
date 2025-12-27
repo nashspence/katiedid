@@ -12,6 +12,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
+
+  notifications:
+    image: caronc/apprise:latest
+    restart: unless-stopped
+
   migrations:
     build:
       context: .
@@ -23,105 +28,86 @@ services:
       FLYWAY_URL: jdbc:postgresql://db:5432/postgres
       FLYWAY_USER: postgres
       FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      FLYWAY_PLACEHOLDERS_NOTIFICATIONS_ENDPOINT: ${NOTIFICATIONS_ENDPOINT:-http://notifications:8000/notify/}
+      FLYWAY_PLACEHOLDERS_NOTIFICATIONS_ENDPOINT: http://notifications:8000/notify/
     command: migrate
     restart: "no"
-  tasks-api:
-    image: postgrest/postgrest:v14.1
-    depends_on:
-      migrations:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    environment:
-      PGRST_DB_URI: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
-      PGRST_DB_SCHEMAS: api
-      PGRST_DB_ANON_ROLE: anon
-      PGRST_SERVER_PORT: 3000
-  notifications:
-    image: caronc/apprise:latest
-    restart: unless-stopped
-  web:
-    build: .
-    depends_on:
-      migrations:
-        condition: service_completed_successfully
-      tasks-api:
-        condition: service_started
-    environment:
-      TZ: America/Los_Angeles
-    ports:
-      - '8082:80'
-    restart: unless-stopped
+
   scheduler:
     image: temporalio/auto-setup:1.29.1
     depends_on:
       db:
         condition: service_healthy
     environment:
-      - DB=postgres12
-      - DB_PORT=5432
-      - POSTGRES_SEEDS=db
-      - POSTGRES_USER=postgres
-      - POSTGRES_PWD=${POSTGRES_PASSWORD:-postgres}
-      - DBNAME=temporal
-      - VISIBILITY_DBNAME=temporal_visibility
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: db
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-postgres}
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      BIND_ON_IP: 0.0.0.0
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "tctl", "cluster", "health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   scheduler-ui:
     image: temporalio/ui:2.43.3
-    depends_on: [scheduler]
-    environment:
-      - TEMPORAL_ADDRESS=scheduler:7233
-    ports: ["8081:8080"]
-    restart: unless-stopped
-  scheduler-setup:
-    image: temporalio/admin-tools:1.29.1-tctl-1.18.4-cli-1.5.0
-    depends_on: [scheduler]
-    entrypoint: ["/bin/sh","-c"]
-    command: >
-      "
-      set -e;
-      for i in $(seq 1 60); do temporal operator cluster health --address scheduler:7233 && break || sleep 1; done;
-
-      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderId --type Keyword || true;
-      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderTags --type KeywordList || true;
-      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderTitle --type Keyword || true;
-      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderText --type Text || true;
-      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderNextFireTime --type Datetime || true;
-      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderEntityType --type Keyword || true;
-      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderEntityId --type Keyword || true;
-      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderTargets --type KeywordList || true;
-      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderScheduleId --type Keyword || true;
-      temporal operator search-attribute create --address scheduler:7233 -n default --name ReminderRecordWorkflowId --type Keyword || true;
-
-      echo done.
-      "
-    restart: "no"
-  reminders-api:
-    build: ./reminders
     depends_on:
       scheduler:
-        condition: service_started
-      scheduler-setup:
-        condition: service_completed_successfully
+        condition: service_healthy
     environment:
-      - TEMPORAL_ADDRESS=scheduler:7233
-      - TEMPORAL_NAMESPACE=default
-      - TASK_QUEUE=reminders
-    ports: ["8083:8000"]
-    command: ["uvicorn", "reminder_api:app", "--host", "0.0.0.0", "--port", "8000"]
+      TEMPORAL_ADDRESS: scheduler:7233
+    ports:
+      - "8081:8080"
     restart: unless-stopped
-  reminders-worker:
-    build: ./reminders
+
+  api:
+    build: ./api/
     depends_on:
-      scheduler:
-        condition: service_started
-      scheduler-setup:
+      migrations:
         condition: service_completed_successfully
+      scheduler:
+        condition: service_healthy
+    restart: unless-stopped
     environment:
-      - TEMPORAL_ADDRESS=scheduler:7233
-      - TEMPORAL_NAMESPACE=default
-      - TASK_QUEUE=reminders
+      PGRST_DB_URI: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
+      TEMPORAL_ADDRESS: scheduler:7233
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/healthz"]
+      interval: 10s
+      timeout: 2s
+      retries: 5
+      start_period: 10s
+
+
+  scheduler-worker:
+    build: ./api
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: scheduler:7233
+      NOTIFICATIONS_ENDPOINT: http://notifications:8000/notify/
     command: ["python", "-u", "reminder_worker.py"]
     restart: unless-stopped
+
+  web:
+    build: ./web
+    depends_on:
+      api:
+        condition: service_healthy
+      scheduler-worker:
+        condition: service_started
+    environment:
+      TZ: America/Los_Angeles
+      API_UPSTREAM: http://api:80/
+    ports:
+      - "8082:80"
+    restart: unless-stopped
+
 volumes:
   db: null

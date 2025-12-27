@@ -8,8 +8,9 @@ from temporalio import activity, workflow
 from temporalio.client import Client
 
 TASK_QUEUE = os.getenv("TASK_QUEUE", "reminders")
-TEMPORAL_ADDRESS = os.getenv("TEMPORAL_ADDRESS", "localhost:7233")
+TEMPORAL_ADDRESS = os.getenv("TEMPORAL_ADDRESS", "scheduler:7233")
 TEMPORAL_NAMESPACE = os.getenv("TEMPORAL_NAMESPACE", "default")
+NOTIFICATIONS_ENDPOINT = os.getenv("NOTIFICATIONS_ENDPOINT", "http://notifications:8000/notify/")
 
 
 @dataclass
@@ -86,14 +87,31 @@ class RecordWorkflow:
 
 @activity.defn
 async def send_apprise(payload: Dict[str, Any]) -> bool:
-    # Import here to avoid Temporal workflow sandbox restrictions (apprise uses locale at import time)
-    import apprise
+    import os, json, asyncio
+    from urllib import request
 
-    a = apprise.Apprise()
-    for t in (payload.get("apprise_targets") or []):
-        a.add(t)
     targets = payload.get("apprise_targets") or []
-    return bool(a.notify(title=payload.get("title", ""), body=payload.get("message", ""))) if targets else True
+    if not targets:
+        return True
+
+    ep = NOTIFICATIONS_ENDPOINT.rstrip("/")
+    url = ep if ep.endswith("/notify") or "/notify/" in ep else ep + "/notify"
+
+    data = json.dumps({
+        "urls": " ".join(targets),
+        "title": payload.get("title", "") or "",
+        "body": payload.get("message", "") or "",
+    }).encode()
+
+    def _post() -> int:
+        req = request.Request(url, data=data, method="POST", headers={"Content-Type": "application/json"})
+        with request.urlopen(req, timeout=10) as r:
+            return r.status
+
+    status = await asyncio.to_thread(_post)
+    if 200 <= status < 300:
+        return True
+    raise RuntimeError(f"notify failed: {status}")
 
 
 @activity.defn

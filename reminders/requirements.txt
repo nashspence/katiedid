@@ -1,7 +1,0 @@
-fastapi==0.115.6
-uvicorn[standard]==0.30.6
-temporalio==1.21.1
-apprise==1.9.2
-cattrs==24.1.2
-python-dateutil==2.9.0.post0
-isodate==0.6.1

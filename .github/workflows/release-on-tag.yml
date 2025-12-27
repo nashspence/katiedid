@@ -20,14 +20,14 @@ jobs:
             context: db
             file: db/flyway.Dockerfile
             paths: "db/**"
-          - name: reminders
-            context: reminders
-            file: reminders/Dockerfile
-            paths: "reminders/**"
+          - name: api
+            context: api
+            file: api/Dockerfile
+            paths: "api/**"
           - name: web
-            context: .
-            file: Dockerfile
-            paths: "Dockerfile src/** nginx.conf package.json"
+            context: web
+            file: web/Dockerfile
+            paths: "web/**"
     steps:
       - uses: actions/checkout@v4
         with:
