@@ -209,11 +209,22 @@ async def _get_task(task_id: int):
     return rows[0] if isinstance(rows, list) and rows else None
 
 
-async def _alerts():
+async def _all_alerts():
     return await _pgrst(
         "GET",
         "/apprise_targets?select=tag,url,enabled,created_at&order=tag.asc,url.asc&limit=1000",
     )
+
+
+async def _alert_tags(search: str, page: int, page_size: int):
+    rows = await _pgrst(
+        "POST",
+        "/rpc/list_alert_tags",
+        headers=J,
+        json={"search": search, "page": page, "page_size": page_size},
+    )
+    items = rows if isinstance(rows, list) else []
+    return {"items": items[:page_size], "hasMore": len(items) > page_size}
 
 
 # -------------------- Optional raw PostgREST passthrough --------------------
@@ -377,7 +388,7 @@ async def _sync_task_reminders(task_id: int, task: dict):
     recs = await _list_records(entity_type="task", entity_id=str(task_id))
     due = task.get("due_date") or None
     tags = task.get("tags") if isinstance(task.get("tags"), list) else []
-    alerts = await _alerts()
+    alerts = await _all_alerts()
 
     if not _to_utc(due):
         for r in recs:
@@ -553,7 +564,7 @@ async def create_task_reminder(task_id: int, body: Dict[str, Any]):
     if not fire_iso:
         raise HTTPException(400, "invalid before value")
 
-    alerts = await _alerts()
+    alerts = await _all_alerts()
     tags = task.get("tags") if isinstance(task.get("tags"), list) else []
     payload = {
         "entity_type": "task",
@@ -572,8 +583,9 @@ async def create_task_reminder(task_id: int, body: Dict[str, Any]):
 
 # ==================== Alerts ====================
 @app.get("/alerts")
-async def list_alerts():
-    return await _alerts()
+async def list_alerts(search: str = "", page: int = 1, pageSize: int = 25):
+    page, pageSize = max(1, page), max(1, min(200, pageSize))
+    return await _alert_tags(search.strip(), page, pageSize)
 
 
 @app.get("/alerts/{tag}")

@@ -79,6 +79,7 @@ const initialState = {
   task: null,
   list: [],
   hasMore: false,
+  alertHasMore: false,
   reminders: [],
   form: {title:'', description:'', tags:'', dueDate:''},
   reminderForm: {before:''},
@@ -236,7 +237,14 @@ function model(sources, actions) {
       {url:`${API_BASE}/tasks/${r.id}`, method:'GET', category:'task'},
       {url:`${API_BASE}/tasks/${r.id}/reminders`, method:'GET', category:'reminders'},
     ];
-    if (r.page === 'alerts') return [{url:`${API_BASE}/alerts`, method:'GET', category:'alerts'}];
+    const alertUrl = () => {
+      const qs = new URLSearchParams();
+      qs.set('page', String(r.p));
+      qs.set('pageSize', String(r.limit));
+      if (r.q) qs.set('search', r.q);
+      return `${API_BASE}/alerts?${qs.toString()}`;
+    };
+    if (r.page === 'alerts') return [{url: alertUrl(), method:'GET', category:'alerts'}];
     if (r.page === 'alert' && r.atag) return [{url:`${API_BASE}/alerts/${encodeURIComponent(r.atag)}`, method:'GET', category:'aurls'}];
     return [];
   };
@@ -253,7 +261,11 @@ function model(sources, actions) {
 
   const taskR$ = pickBody('task').map(t => setKey('task', t || null));
   const remindersR$ = pickBody('reminders').map(rows => setKey('reminders', asArr(rows)));
-  const alertsR$ = pickBody('alerts').map(rows => setKey('alerts', asArr(rows)));
+  const alertsR$ = pickBody('alerts').map(b => prev => {
+    const items = b && b.items ? asArr(b.items) : asArr(b);
+    const hasMore = !!(b && b.hasMore);
+    return {...base(prev), alerts: items, alertHasMore: hasMore};
+  });
   const aurlsR$ = pickBody('aurls').map(rows => setKey('alertUrls', asArr(rows)));
 
   const formInitR$ = route$.map(r => prev => {
@@ -645,7 +657,7 @@ function view(state$) {
       r.page === 'home' ? TopNav(r) : null,
       header(),
       r.page === 'task' ? (() => {
-        const rs = (s.reminders || []).slice().sort((a,b) => (a.nextFireTime||a.next_fire_time||'').localeCompare(b.nextFireTime||b.next_fire_time||''));
+        const rs = s.reminders || [];
         const add = href(r,{page:'reminder', parent:null});
         return div('.reminders', [
           h1('Reminders'),
@@ -704,22 +716,7 @@ function view(state$) {
     };
 
     const alertsPage = () => {
-      const q = qnorm(r.q);
-      const map = new Map();
-      (s.alerts||[]).forEach(x => {
-        const tag = x && x.tag ? String(x.tag) : '';
-        if (!tag) return;
-        if (!map.has(tag)) map.set(tag, {tag, n:0, en:0, latest:null});
-        const it = map.get(tag);
-        it.n += 1;
-        if (x.enabled) it.en += 1;
-        const c = x.created_at;
-        const d = c ? new Date(c) : null;
-        if (d && !isNaN(d) && (!it.latest || d > it.latest)) it.latest = d;
-      });
-      const tags = Array.from(map.values())
-        .filter(it => !q || it.tag.toLowerCase().includes(q))
-        .sort((a,b) => a.tag.localeCompare(b.tag));
+      const tags = s.alerts || [];
 
       return div('.page', [
         TopNav(r),
@@ -727,13 +724,17 @@ function view(state$) {
         div([label(['Filter tags ', input('.q',{attrs:{placeholder:'tag', value:r.q}})])]),
         h('table', [
           h('thead',[h('tr',[h('th','Tag'),h('th','URLs'),h('th','Enabled'),h('th','Latest')])]),
-          h('tbody', tags.map(it => h('tr',{key:it.tag}, [
-            h('td',[a('.nav',{attrs:{href: href(r,{page:'alert', atag: it.tag})}}, it.tag)]),
-            h('td',[String(it.n)]),
-            h('td',[String(it.en)]),
-            h('td',[it.latest ? dtFmt(it.latest.toISOString()) : '']),
-          ])))
+          h('tbody', tags.map(it => {
+            const latest = it.latest || it.latest_at || '';
+            return h('tr',{key:it.tag}, [
+              h('td',[a('.nav',{attrs:{href: href(r,{page:'alert', atag: it.tag, p:1})}}, it.tag)]),
+              h('td',[String(it.url_count ?? it.urlCount ?? 0)]),
+              h('td',[String(it.enabled_count ?? it.enabledCount ?? 0)]),
+              h('td',[latest ? dtFmt(latest) : '']),
+            ]);
+          }))
         ]),
+        Pager(r, !!s.alertHasMore),
         h1('Add'),
         form('.anew', [
           div([label(['Tag ', input('.anew-tag',{attrs:{value:s.anew.tag||'', required:true}})])]),
