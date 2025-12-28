@@ -19,8 +19,6 @@
   "privileged": true,
   "overrideCommand": false,
   "mounts": ["source=devcontainer-dind,target=/var/lib/docker,type=volume"],
-  "remoteUser": "vscode",
-  "updateRemoteUserUID": true,
   "containerEnv": {
     "PIP_DISABLE_PIP_VERSION_CHECK": "1"
   },
