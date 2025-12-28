@@ -59,12 +59,9 @@ services:
         condition: service_healthy
     restart: unless-stopped
     environment:
-      PGRST_DB_URI: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
+      POSTGRES_URI: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
       TEMPORAL_ADDRESS: scheduler:7233
-      FLYWAY_URL: jdbc:postgresql://db:5432/postgres
-      FLYWAY_USER: postgres
-      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      FLYWAY_PLACEHOLDERS_NOTIFICATIONS_ENDPOINT: http://notifications:8000/notify/
+      NOTIFICATIONS_ENDPOINT: http://notifications:8000/notify/
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80/healthz"]
       interval: 10s

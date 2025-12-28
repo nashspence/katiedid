@@ -148,28 +148,27 @@ create table if not exists api.apprise_targets (
 create index if not exists apprise_targets_tag_enabled_idx on api.apprise_targets (tag) where enabled;
 
 create or replace function api.list_alert_tags(
-  search text default '', page int default 1, page_size int default 25
+  _search text default '',
+  _page int default 1,
+  _page_size int default 25
 ) returns table(
   tag text,
   url_count bigint,
   enabled_count bigint,
   latest timestamptz
 ) language sql stable as $$
-  with args as (
-    select
-      greatest(page, 1)::int as p,
-      greatest(page_size, 1)::int as ps
-  )
-  select tag,
-         count(*) as url_count,
-         count(*) filter (where enabled) as enabled_count,
-         max(created_at) as latest
-    from api.apprise_targets, args
-   where search is null or search = '' or tag ilike ('%' || search || '%')
-   group by tag
-   order by tag asc
-   offset (args.p - 1) * args.ps
-   limit args.ps + 1;
+  select
+    t.tag,
+    count(*) as url_count,
+    count(*) filter (where t.enabled) as enabled_count,
+    max(t.created_at) as latest
+  from api.apprise_targets t
+  where coalesce(_search, '') = ''
+     or t.tag ilike ('%' || _search || '%')
+  group by t.tag
+  order by t.tag asc
+  offset (greatest(_page, 1) - 1) * greatest(_page_size, 1)
+  limit  greatest(_page_size, 1) + 1;
 $$;
 
 create or replace function api._apprise_notify(tag text, title text, body text, type text default 'info')

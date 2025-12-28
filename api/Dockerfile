@@ -28,22 +28,21 @@ RUN set -eux; \
     tar -C /usr/local/bin -xJf /tmp/pgrst.tar.xz postgrest; \
     rm /tmp/pgrst.tar.xz
 
-ARG FLYWAY_VERSION=10.19.0
+ARG FLYWAY_VERSION=11.20.0
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
-      amd64) platform="x64" ;; \
-      arm64) platform="arm64" ;; \
+      amd64) platform="linux-x64" ;; \
+      arm64) echo "No official linux-arm64 CLI archive is documented for ${FLYWAY_VERSION}; use the Docker image approach below for arm64." >&2; exit 1 ;; \
       *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
     esac; \
     curl -fsSL -o /tmp/flyway.tar.gz \
-      "https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/${FLYWAY_VERSION}/flyway-commandline-${FLYWAY_VERSION}-linux-${platform}.tar.gz"; \
+      "https://github.com/flyway/flyway/releases/download/flyway-${FLYWAY_VERSION}/flyway-commandline-${FLYWAY_VERSION}-${platform}.tar.gz"; \
     tar -C /usr/local -xzf /tmp/flyway.tar.gz; \
-    ln -s /usr/local/flyway-${FLYWAY_VERSION}/flyway /usr/local/bin/flyway; \
+    ln -sf "/usr/local/flyway-${FLYWAY_VERSION}/flyway" /usr/local/bin/flyway; \
     rm /tmp/flyway.tar.gz
 
-RUN mkdir -p /flyway/sql
-COPY db/schema.sql db/afterMigrate.sql /flyway/sql/
+COPY db /flyway/sql
 
 WORKDIR /app
 COPY requirements.txt .
