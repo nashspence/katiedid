@@ -1,0 +1,53 @@
+{
+  "name": "Cycle Tasks (universal dind + Open Codex CLI)",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "installDockerBuildx": true,
+      "dockerDashComposeVersion": "v2"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.11"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {
+      "installMethod": "apt"
+    }
+  },
+  "init": true,
+  "privileged": true,
+  "overrideCommand": false,
+  "mounts": [
+    "source=devcontainer-dind,target=/var/lib/docker,type=volume"
+  ],
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": true,
+  "containerEnv": {
+    "PIP_DISABLE_PIP_VERSION_CHECK": "1"
+  },
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y pipx libsecret-1-0 && sudo -u vscode pipx ensurepath && sudo -u vscode pipx install --force open-codex && open-codex --version",
+  "postStartCommand": "sudo -u vscode sh -c 'set -e; SSH_ENV=\"$HOME/.ssh/agent.env\"; mkdir -p $HOME/.ssh && chmod 700 $HOME/.ssh; if [ -S \"${SSH_AUTH_SOCK:-}\" ]; then ACTIVE_SOCK=\"$SSH_AUTH_SOCK\"; echo \"Using forwarded SSH agent at $ACTIVE_SOCK\"; else ACTIVE_SOCK=\"$HOME/.ssh/ssh-agent.sock\"; eval \"$(ssh-agent -a $ACTIVE_SOCK)\" >/tmp/ssh-agent.log; echo \"Started container ssh-agent at $ACTIVE_SOCK\"; fi; echo export SSH_AUTH_SOCK=\"$ACTIVE_SOCK\" > $SSH_ENV; grep -q agent.env $HOME/.bashrc || echo \"[ -f $SSH_ENV ] && . $SSH_ENV\" >> $HOME/.bashrc; . $SSH_ENV; gh --version || true; ssh -T git@github.com 2>&1 | sed -n \'1p\' || true'",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-azuretools.vscode-docker",
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "eamodio.gitlens",
+        "GitHub.vscode-pull-request-github",
+        "github.vscode-github-actions",
+        "GitHub.copilot",
+        "openai.chatgpt"
+      ]
+    }
+  },
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "4gb",
+    "storage": "32gb"
+  },
+  "runServices": [],
+  "forwardPorts": [
+    3000
+  ]
+}
