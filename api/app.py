@@ -221,7 +221,7 @@ async def _alert_tags(search: str, page: int, page_size: int):
         "POST",
         "/rpc/list_alert_tags",
         headers=J,
-        json={"search": search, "page": page, "page_size": page_size},
+        json={"_search": search, "_page": page, "_page_size": page_size},
     )
     items = rows if isinstance(rows, list) else []
     return {"items": items[:page_size], "hasMore": len(items) > page_size}
