@@ -28,6 +28,23 @@ RUN set -eux; \
     tar -C /usr/local/bin -xJf /tmp/pgrst.tar.xz postgrest; \
     rm /tmp/pgrst.tar.xz
 
+ARG FLYWAY_VERSION=10.19.0
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) platform="x64" ;; \
+      arm64) platform="arm64" ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/flyway.tar.gz \
+      "https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/${FLYWAY_VERSION}/flyway-commandline-${FLYWAY_VERSION}-linux-${platform}.tar.gz"; \
+    tar -C /usr/local -xzf /tmp/flyway.tar.gz; \
+    ln -s /usr/local/flyway-${FLYWAY_VERSION}/flyway /usr/local/bin/flyway; \
+    rm /tmp/flyway.tar.gz
+
+RUN mkdir -p /flyway/sql
+COPY db/schema.sql db/afterMigrate.sql /flyway/sql/
+
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

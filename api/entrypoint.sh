@@ -4,6 +4,15 @@ set -eu
 ADDR="${TEMPORAL_ADDRESS:-scheduler:7233}"
 NS="${TEMPORAL_NAMESPACE:-default}"
 
+flyway \
+  -locations=filesystem:/flyway/sql \
+  -connectRetries="${FLYWAY_CONNECT_RETRIES:-60}" \
+  -url="${FLYWAY_URL:-jdbc:postgresql://db:5432/postgres}" \
+  -user="${FLYWAY_USER:-postgres}" \
+  -password="${FLYWAY_PASSWORD:-postgres}" \
+  ${FLYWAY_PLACEHOLDERS_NOTIFICATIONS_ENDPOINT:+-placeholders.notifications_endpoint="${FLYWAY_PLACEHOLDERS_NOTIFICATIONS_ENDPOINT}"} \
+  migrate
+
 for i in $(seq 1 60); do temporal operator cluster health --address "$ADDR" && break || sleep 1; done
 cat <<'EOF' | while read -r n t; do [ -z "${n:-}" ] || temporal operator search-attribute create --address "$ADDR" -n "$NS" --name "$n" --type "$t" || true; done
 ReminderId Keyword
