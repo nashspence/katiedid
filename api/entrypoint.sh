@@ -2,7 +2,6 @@
 set -eu
 
 ADDR="${TEMPORAL_ADDRESS:-scheduler:7233}"
-NS="${TEMPORAL_NAMESPACE:-default}"
 
 POSTGRES_URI="${POSTGRES_URI:?set POSTGRES_URI (e.g. postgres://user:pass@host:5432/dbname)}"
 export PGRST_DB_URI="${PGRST_DB_URI:-$POSTGRES_URI}"
@@ -30,10 +29,7 @@ flyway \
   migrate
 
 for i in $(seq 1 60); do temporal operator cluster health --address "$ADDR" && break || sleep 1; done
-cat <<'EOF' | while read -r n t; do [ -z "${n:-}" ] || temporal operator search-attribute create --address "$ADDR" -n "$NS" --name "$n" --type "$t" || true; done
-TaskReminderId Int
-TaskReminderFireTime Datetime
-EOF
+temporal operator namespace create --address "$ADDR" --namespace reminders --retention 30d || true
 
 cat >/tmp/postgrest.conf <<EOF
 db-uri = "${PGRST_DB_URI:?}"
