@@ -10,6 +10,7 @@ create table if not exists api.tasks(
   due_date timestamptz null,
   due_date_pending boolean not null default false,
   done boolean not null default false,
+  trashed boolean not null default false,
   created_at timestamptz not null default now(),
   parent_id bigint null references api.tasks(id) on delete cascade,
   position int not null default 0,
@@ -43,6 +44,16 @@ create index if not exists tasks_due_date_idx on api.tasks(due_date) where due_d
 create index if not exists tasks_done_idx on api.tasks(done);
 create index if not exists tasks_created_at_idx on api.tasks(created_at);
 create index if not exists tasks_roll_idx on api.tasks(roll) where roll;
+
+create table if not exists api.task_history(
+  id bigint generated always as identity primary key,
+  task_id bigint not null references api.tasks(id) on delete cascade,
+  change text not null check (change in ('create','update','delete')),
+  old_values jsonb null,
+  new_values jsonb null,
+  created_at timestamptz not null default now()
+);
+create index if not exists task_history_task_idx on api.task_history(task_id);
 
 alter table api.tasks add column if not exists search tsvector
 generated always as (to_tsvector('simple',coalesce(title,'')||' '||coalesce(description,''))) stored;
@@ -153,41 +164,85 @@ begin
 end $$;
 
 create or replace function api.tg_tasks_webhook() returns trigger language plpgsql as $$
-declare
-  new_tags text[]:=coalesce(new.tags,'{}'::text[]);
-  old_tags text[]:=coalesce(old.tags,'{}'::text[]);
-  t text;
-  due_changed boolean;
-  done_changed boolean;
-  content_changed boolean;
-  url text:=coalesce(nullif(case when tg_op='DELETE' then old.alert_url else new.alert_url end,''),format('/?page=task&id=%s',case when tg_op='DELETE' then old.id else new.id end));
+declare o jsonb:='{}'; n jsonb:='{}'; ch text:='update';
 begin
   if tg_op='INSERT' then
-    foreach t in array new_tags loop perform api._webhook_notify(t,format('[%s] task created',t),format('%s',new.title),'info',url); end loop;
+    insert into api.task_history(task_id,change,new_values)
+    values(new.id,'create',jsonb_build_object('title',new.title,'description',new.description,'tags',new.tags,'alert_url',new.alert_url,'due_date',new.due_date,'done',new.done,'trashed',new.trashed));
     return new;
   end if;
   if tg_op='DELETE' then
-    foreach t in array old_tags loop perform api._webhook_notify(t,format('[%s] task deleted',t),format('%s',old.title),'warning',url); end loop;
+    insert into api.task_history(task_id,change,old_values)
+    values(old.id,'delete',jsonb_build_object('title',old.title,'description',old.description,'tags',old.tags,'alert_url',old.alert_url,'due_date',old.due_date,'done',old.done,'trashed',old.trashed));
     return old;
   end if;
+  if (new.title is distinct from old.title) or (new.description is distinct from old.description) then
+    o:=o||jsonb_build_object('title',old.title,'description',old.description);
+    n:=n||jsonb_build_object('title',new.title,'description',new.description);
+  end if;
+  if (new.tags is distinct from old.tags) or (new.alert_url is distinct from old.alert_url) then
+    o:=o||jsonb_build_object('tags',old.tags,'alert_url',old.alert_url);
+    n:=n||jsonb_build_object('tags',new.tags,'alert_url',new.alert_url);
+  end if;
+  if new.due_date is distinct from old.due_date then
+    o:=o||jsonb_build_object('due_date',old.due_date);
+    n:=n||jsonb_build_object('due_date',new.due_date);
+  end if;
+  if new.done is distinct from old.done then
+    o:=o||jsonb_build_object('done',old.done);
+    n:=n||jsonb_build_object('done',new.done);
+  end if;
+  if new.trashed is distinct from old.trashed then
+    o:=o||jsonb_build_object('trashed',old.trashed);
+    n:=n||jsonb_build_object('trashed',new.trashed);
+    if new.trashed and not old.trashed then ch:='delete'; end if;
+  end if;
+  if n='{}'::jsonb then return new; end if;
+  insert into api.task_history(task_id,change,old_values,new_values)
+  values(new.id,ch,o,n);
+  return new;
+end $$;
 
-  due_changed:=new.due_date is distinct from old.due_date;
-  done_changed:=new.done is distinct from old.done;
-  content_changed:=(new.title is distinct from old.title) or (new.description is distinct from old.description);
-
-  for t in select distinct x from unnest(old_tags||new_tags) as u(x) loop
-    if (t=any(new_tags)) and not (t=any(old_tags)) then
-      perform api._webhook_notify(t,format('[%s] task added to tag',t),format('%s',new.title),'info',url);
-    elsif (t=any(old_tags)) and not (t=any(new_tags)) then
-      perform api._webhook_notify(t,format('[%s] task removed from tag',t),format('%s',old.title),'warning',url);
-    elsif (t=any(new_tags)) and (due_changed or done_changed or content_changed) then
+create or replace function api.tg_task_history_alerts() returns trigger language plpgsql as $$
+declare
+  o jsonb:=coalesce(new.old_values,'{}');
+  n jsonb:=coalesce(new.new_values,'{}');
+  base api.tasks;
+  t text;
+  tags_old text[]:=array(select jsonb_array_elements_text(coalesce(o->'tags','[]'::jsonb)));
+  tags_new text[]:=array(select jsonb_array_elements_text(coalesce(n->'tags','[]'::jsonb)));
+  due_changed boolean:=(n ? 'due_date') or (o ? 'due_date');
+  done_changed boolean:=(n ? 'done') or (o ? 'done');
+  trashed_changed boolean:=(n ? 'trashed') or (o ? 'trashed');
+  content_changed boolean:=(n ? 'title') or (n ? 'description');
+  title text;
+  url text;
+begin
+  select * into base from api.tasks where id=new.task_id;
+  if array_length(tags_new,1) is null then tags_new:=coalesce(base.tags,'{}'::text[]); end if;
+  if array_length(tags_old,1) is null then tags_old:=coalesce(tags_new,coalesce(base.tags,'{}'::text[])); end if;
+  title:=coalesce(n->>'title',o->>'title',base.title,format('Task #%s',new.task_id));
+  url:=coalesce(n->>'alert_url',o->>'alert_url',base.alert_url,format('/?page=task&id=%s',new.task_id));
+  if new.change='create' then
+    foreach t in array tags_new loop perform api._webhook_notify(t,format('[%s] task created',t),title,'info',url); end loop; return new;
+  end if;
+  if new.change='delete' then
+    foreach t in array tags_old loop perform api._webhook_notify(t,format('[%s] task deleted',t),title,'warning',url); end loop; return new;
+  end if;
+  for t in select distinct x from unnest(coalesce(tags_old,'{}'::text[])||coalesce(tags_new,'{}'::text[])) as u(x) loop
+    if (t=any(tags_new)) and not (t=any(tags_old)) then
+      perform api._webhook_notify(t,format('[%s] task added to tag',t),title,'info',url);
+    elsif (t=any(tags_old)) and not (t=any(tags_new)) then
+      perform api._webhook_notify(t,format('[%s] task removed from tag',t),title,'warning',url);
+    elsif (t=any(tags_new)) and (due_changed or done_changed or content_changed or trashed_changed) then
       perform api._webhook_notify(
         t,format('[%s] task updated',t),
         format('%s%s%s%s',
-          new.title,
+          title,
           case when content_changed then E'\nTitle/description updated' else '' end,
-          case when due_changed then format(E'\nDue date: %s → %s',coalesce(old.due_date::text,'(none)'),coalesce(new.due_date::text,'(none)')) else '' end,
-          case when done_changed then format(E'\nDone: %s → %s',old.done,new.done) else '' end
+          case when due_changed then format(E'\nDue date: %s → %s',coalesce(o->>'due_date','(none)'),coalesce(n->>'due_date','(none)')) else '' end,
+          case when done_changed then format(E'\nDone: %s → %s',coalesce(o->>'done',''),coalesce(n->>'done','')) else '' end
+          || case when trashed_changed then format(E'\nTrashed: %s → %s',coalesce(o->>'trashed',''),coalesce(n->>'trashed','')) else '' end
         ),'info',url
       );
     end if;
@@ -199,6 +254,10 @@ drop trigger if exists t_tasks_webhook on api.tasks;
 drop trigger if exists t_tasks_apprise on api.tasks;
 create trigger t_tasks_webhook after insert or update or delete on api.tasks
 for each row execute function api.tg_tasks_webhook();
+
+drop trigger if exists t_task_history_alerts on api.task_history;
+create trigger t_task_history_alerts after insert on api.task_history
+for each row execute function api.tg_task_history_alerts();
 
 create table if not exists api.task_roll_outbox(
   id bigint generated always as identity primary key,

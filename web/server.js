@@ -28,6 +28,7 @@ const toLocal = (iso) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 const dt = (iso) => (iso ? new Date(iso).toLocaleString() : "");
+const j = (v) => (v == null ? "" : JSON.stringify(v));
 const pgIntSec = (s) => {
   s = String(s ?? "").trim();
   if (!s) return 0;
@@ -80,6 +81,7 @@ const parseRoute = (u) => {
     q: q.get("q") || "",
     tags: q.get("tags") || "",
     done: (q.get("done") || "0") === "1",
+    trash: (q.get("trash") || "0") === "1",
     sort: q.get("sort") || "position",
     dir: (q.get("dir") || "asc") === "desc" ? "desc" : "asc",
     reorder: (q.get("reorder") || "0") === "1",
@@ -112,6 +114,7 @@ const listUrl = (r) => {
   const q = new URLSearchParams({ select: "*" });
   q.set("parent_id", r.page === "task" && r.id != null ? `eq.${r.id}` : "is.null");
   if (!r.done) q.set("done", "eq.false");
+  if (!r.trash) q.set("trashed", "eq.false");
   const ts = tagsFrom(r.tags);
   if (ts.length) q.set("tags", `cs.{${ts.map((x) => x.replace(/"/g, "")).join(",")}}`);
   if (r.q.trim()) q.set("or", `(title.ilike.*${r.q}*,description.ilike.*${r.q}*)`);
@@ -217,6 +220,7 @@ const filters = (u, r) => {
     <label>Search <input name=q value="${esc(r.q)}" data-as></label><br>
     <label>Tags <input name=tags value="${esc(r.tags)}" data-as></label><br>
     <label><input type=checkbox name=done value=1 ${r.done ? "checked" : ""} data-as> show done</label><br>
+    <label><input type=checkbox name=trash value=1 ${r.trash ? "checked" : ""} data-as> show trashed</label><br>
     <label><input type=checkbox name=reorder value=1 ${r.reorder ? "checked" : ""} data-as> reorder</label><br>
     <label>Per page ${sel("limit", r.limit, [["10", "10"], ["25", "25"], ["50", "50"], ["100", "100"]])}</label>
     <label>Sort ${sel("sort", r.sort, [["position", "position"], ["due", "due"], ["created", "created"], ["title", "title"]])}</label>
@@ -320,7 +324,7 @@ async function render(req, res) {
   const u = new URL(req.url, `http://${req.headers.host}`);
   const r = parseRoute(u);
 
-  let task = null, list = [], more = false, rem = [];
+  let task = null, list = [], more = false, rem = [], history = [];
   let alerts = [], alertMore = false, aurls = [];
   let rlist = [], rmore = false, one = null;
 
@@ -338,6 +342,9 @@ async function render(req, res) {
     if (needTask) jobs.push(api(
       `/reminders?task_id=eq.${r.id}&kind=eq.task_due_before&order=created_at.asc`
     ).then((x) => (rem = Array.isArray(x) ? x : [])));
+    if (needTask) jobs.push(api(
+      `/task_history?task_id=eq.${r.id}&order=created_at.desc`
+    ).then((x) => (history = Array.isArray(x) ? x : [])));
 
     if (r.page === "reminders") jobs.push(api(remListUrl(r)).then((x) => {
       rlist = Array.isArray(x) ? x : [];
@@ -405,11 +412,24 @@ async function render(req, res) {
           }).join("") || html`<li>None</li>`}</ul>`
           : "";
 
+        const hist = history.length
+          ? history.map((h) => html`<tr>
+              <td>${esc(dt(h.created_at))}</td>
+              <td>${esc(h.change || "")}</td>
+              <td>${esc(j(h.old_values))}</td>
+              <td>${esc(j(h.new_values))}</td>
+            </tr>`).join("")
+          : "<tr><td colspan=4>None</td></tr>";
         return html`${nav(u)}${hdr}${remHtml}
           <div><a href="${newHref}">+ New</a></div>
           ${filters(u, r)}
           <table>${head}<tbody>${list.map((t) => row(u, r, t)).join("")}</tbody></table>
-          ${pager(u, r, more)}`;
+          ${pager(u, r, more)}
+          <h2>History</h2>
+          <table>
+            <thead><tr><th>When</th><th>Change</th><th>Old</th><th>New</th></tr></thead>
+            <tbody>${hist}</tbody>
+          </table>`;
       }
 
       if (r.page === "new") {
@@ -448,7 +468,8 @@ async function render(req, res) {
             <label>Due <input type=datetime-local name=due value="${esc(task?.due_date ? toLocal(task.due_date) : "")}"></label><br>
             ${rollUi(task)}
             <button>Save</button>
-            <button name=a value=delete>Delete</button>
+            <input type=hidden name=trashed value="${task?.trashed ? "0" : "1"}">
+            <button name=a value=delete>${task?.trashed ? "Restore" : "Trash"}</button>
           </form>`;
       }
 
@@ -694,7 +715,7 @@ async function act(req, res) {
       });
     }
 
-    if (a === "delete") await api(`/tasks?id=eq.${+b.id}`, { method: "DELETE" });
+    if (a === "delete") await api(`/tasks?id=eq.${+b.id}`, { method: "PATCH", headers: H, body: JSON.stringify({ trashed: String(b.trashed ?? "1") !== "0" }) });
 
     if (a === "trel") await api("/reminders", {
       method: "POST", headers: H,
