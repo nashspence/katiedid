@@ -8,6 +8,7 @@ create table if not exists api.tasks(
   tags text[] null,
   alert_url text null,
   due_date timestamptz null,
+  due_date_pending boolean not null default false,
   done boolean not null default false,
   created_at timestamptz not null default now(),
   parent_id bigint null references api.tasks(id) on delete cascade,
@@ -223,12 +224,13 @@ create or replace function api.tg_tasks_roll_complete() returns trigger language
 declare k text; secs int;
 begin
   if tg_op='UPDATE' and (not old.done) and new.done and new.roll and new.roll_spec is not null then
-    new.done:=false; new.last_completed_at:=now();
+    new.done:=false; new.last_completed_at:=now(); new.due_date_pending:=false;
     k:=lower(coalesce(new.roll_spec->>'kind',''));
     if k='interval' then
       secs:=coalesce((new.roll_spec->>'every_seconds')::int,0);
       if secs>0 then new.due_date:=coalesce(new.due_date,now()) + (secs*interval '1 second'); end if;
     elsif k in ('cron','calendar') then
+      new.due_date_pending:=true;
       perform api._task_roll_outbox('sync',new.id);
       perform api._task_roll_outbox('roll',new.id);
     end if;
