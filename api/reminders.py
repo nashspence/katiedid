@@ -123,7 +123,7 @@ returning o.id,o.op,o.task_id,o.attempts;"""
 TASK_MARK_OK="update api.task_roll_outbox set processed_at=now(),last_error=null where id=$1;"
 TASK_MARK_FAIL="update api.task_roll_outbox set last_error=$2,available_at=now()+($3::int*interval '1 second') where id=$1;"
 TASK_FETCH_SQL="select id,due_date,roll,roll_spec,roll_tz from api.tasks where id=$1;"
-TASK_SET_DUE="update api.tasks set due_date=$2 where id=$1;"
+TASK_SET_DUE="update api.tasks set due_date=$2,due_date_pending=false where id=$1;"
 
 async def _sync_rem(pg:asyncpg.Connection,c:Client,rid:int)->None:
   row=await pg.fetchrow(FETCH_SQL,rid)

@@ -241,17 +241,19 @@ const moveBtn = (u, taskId, pid, pos, lab) =>
 const row = (u, r, t) => {
   const on = colSet(r), ar = r.reorder && r.sort === "position";
   const pid = t.parent_id == null ? "null" : String(t.parent_id);
+  const pending = !!t.due_date_pending, done = pending || t.done;
+  const dueTxt = pending ? "checking next due date…" : dt(t.due_date);
   return html`<tr draggable=true data-id="${t.id}" data-parent="${pid}">
     ${on.has("done") ? html`<td><form class=i method=post action=/a>
       <input type=hidden name=a value=toggle>
       <input type=hidden name=back value="${esc(u.search)}">
       <input type=hidden name=id value="${t.id}">
-      <input type=checkbox name=done value=1 ${t.done ? "checked" : ""} data-as>
+      <input type=checkbox name=done value=1 ${done ? "checked" : ""} ${pending ? "disabled" : ""} data-as>
     </form></td>` : ""}
     ${on.has("position") ? html`<td>${esc(t.position ?? "")}</td>` : ""}
     ${on.has("title") ? html`<td>${ar ? moveBtn(u, t.id, pid, (t.position | 0) - 1, "↑") + moveBtn(u, t.id, pid, (t.position | 0) + 2, "↓") : ""
       }<a href="${href(u, { page: "task", id: t.id })}">${esc(t.title || "(untitled)")}</a></td>` : ""}
-    ${on.has("due") ? html`<td>${esc(dt(t.due_date))}</td>` : ""}
+    ${on.has("due") ? html`<td>${esc(dueTxt)}</td>` : ""}
     ${on.has("tags") ? html`<td>${esc((t.tags || []).join(" "))}</td>` : ""}
     ${on.has("created") ? html`<td>${esc(dt(t.created_at))}</td>` : ""}
   </tr>`;
