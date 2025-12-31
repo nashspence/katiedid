@@ -99,6 +99,8 @@ const href = (u, patch = {}) => {
   return "/?" + q.toString();
 };
 
+const taskUrl = (req, id) => new URL(`/?page=task&id=${id}`, `http://${req.headers.host || "localhost"}`).toString();
+
 const colSet = (r) => new Set(r.cols?.length ? r.cols : DEF_COLS);
 const toggleCols = (r, c) => {
   const a = (r.cols?.length ? r.cols : DEF_COLS).slice();
@@ -412,6 +414,7 @@ async function render(req, res) {
         const back = r.parent == null
           ? href(u, { page: "home", id: null })
           : href(u, { page: "task", id: r.parent });
+        const defAlert = new URL(href(u, { page: "task", id: "" }), u).toString();
         return html`${nav(u)}<a href="${back}">← Back</a><h1>New</h1>
           <form method=post action=/a>
             <input type=hidden name=a value=save>
@@ -421,6 +424,7 @@ async function render(req, res) {
             <label>Title <input name=title required></label><br>
             <label>Description <textarea name=description rows=6></textarea></label><br>
             <label>Tags <input name=tags></label><br>
+            <label>Change alert URL <input name=alert_url value="${esc(defAlert)}"></label><br>
             <label>Due <input type=datetime-local name=due></label><br>
             ${rollUi(null)}
             <button>Create</button>
@@ -428,6 +432,7 @@ async function render(req, res) {
       }
 
       if (r.page === "edit") {
+        const defAlert = new URL(href(u, { page: "task", id: r.id }), u).toString();
         return html`${nav(u)}<a href="${href(u, { page: "task", id: r.id })}">← Back</a><h1>Edit</h1>
           <form method=post action=/a>
             <input type=hidden name=a value=save>
@@ -437,6 +442,7 @@ async function render(req, res) {
             <label>Title <input name=title required value="${esc(task?.title || "")}"></label><br>
             <label>Description <textarea name=description rows=6>${esc(task?.description || "")}</textarea></label><br>
             <label>Tags <input name=tags value="${esc((task?.tags || []).join(" "))}"></label><br>
+            <label>Change alert URL <input name=alert_url value="${esc(task?.alert_url || defAlert)}"></label><br>
             <label>Due <input type=datetime-local name=due value="${esc(task?.due_date ? toLocal(task.due_date) : "")}"></label><br>
             ${rollUi(task)}
             <button>Save</button>
@@ -643,11 +649,13 @@ async function act(req, res) {
       if (!title) throw new Error("Title required");
 
       const roll = b.roll === "1" || b.roll === "on";
+      const alertUrl = String(b.alert_url || "").trim();
       const send = {
         title,
         description: String(b.description || ""),
         tags: tagsFrom(b.tags),
         due_date: toUtcISO(b.due),
+        alert_url: alertUrl || null,
         roll,
         roll_tz: null,
         roll_spec: null,
@@ -668,6 +676,7 @@ async function act(req, res) {
             title: send.title,
             description: send.description,
             tags: send.tags,
+            alert_url: send.alert_url,
             due_date: send.due_date,
             done: false,
             parent_id: b.parent === "" || b.parent == null || b.parent === "null" ? null : +b.parent,
@@ -676,10 +685,10 @@ async function act(req, res) {
         const id = created?.id ?? created?.[0]?.id;
         if (id) await api(`/tasks?id=eq.${+id}`, {
           method: "PATCH", headers: H,
-          body: JSON.stringify({ roll: send.roll, roll_tz: send.roll_tz, roll_spec: send.roll_spec }),
+          body: JSON.stringify({ roll: send.roll, roll_tz: send.roll_tz, roll_spec: send.roll_spec, alert_url: alertUrl || taskUrl(req, +id) }),
         });
       } else await api(`/tasks?id=eq.${+b.id}`, {
-        method: "PATCH", headers: H, body: JSON.stringify(send),
+        method: "PATCH", headers: H, body: JSON.stringify({ ...send, alert_url: alertUrl || taskUrl(req, +b.id) }),
       });
     }
 

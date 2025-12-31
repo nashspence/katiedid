@@ -6,6 +6,7 @@ create table if not exists api.tasks(
   title text not null,
   description text not null default '',
   tags text[] null,
+  alert_url text null,
   due_date timestamptz null,
   done boolean not null default false,
   created_at timestamptz not null default now(),
@@ -47,7 +48,7 @@ generated always as (to_tsvector('simple',coalesce(title,'')||' '||coalesce(desc
 create index if not exists tasks_search_gin on api.tasks using gin(search);
 
 create or replace function api.append_task(
-  title text,description text default '',tags text[] default null,
+  title text,description text default '',tags text[] default null,alert_url text default null,
   due_date timestamptz default null,done boolean default false,parent_id bigint default null
 ) returns api.tasks language plpgsql as $$
 declare p bigint:=coalesce(parent_id,0); pos int; r api.tasks;
@@ -56,8 +57,8 @@ begin
   select coalesce(max(t.position),-1)+1 into pos
   from api.tasks t
   where t.parent_id is not distinct from append_task.parent_id and t.position<1000000;
-  insert into api.tasks(title,description,tags,due_date,done,parent_id,position)
-  values(append_task.title,append_task.description,append_task.tags,append_task.due_date,append_task.done,append_task.parent_id,pos)
+  insert into api.tasks(title,description,tags,alert_url,due_date,done,parent_id,position)
+  values(append_task.title,append_task.description,append_task.tags,append_task.alert_url,append_task.due_date,append_task.done,append_task.parent_id,pos)
   returning * into r;
   return r;
 end $$;
@@ -158,13 +159,14 @@ declare
   due_changed boolean;
   done_changed boolean;
   content_changed boolean;
+  url text:=coalesce(nullif(case when tg_op='DELETE' then old.alert_url else new.alert_url end,''),format('/?page=task&id=%s',case when tg_op='DELETE' then old.id else new.id end));
 begin
   if tg_op='INSERT' then
-    foreach t in array new_tags loop perform api._webhook_notify(t,format('[%s] task created',t),format('%s',new.title)); end loop;
+    foreach t in array new_tags loop perform api._webhook_notify(t,format('[%s] task created',t),format('%s',new.title),'info',url); end loop;
     return new;
   end if;
   if tg_op='DELETE' then
-    foreach t in array old_tags loop perform api._webhook_notify(t,format('[%s] task deleted',t),format('%s',old.title),'warning'); end loop;
+    foreach t in array old_tags loop perform api._webhook_notify(t,format('[%s] task deleted',t),format('%s',old.title),'warning',url); end loop;
     return old;
   end if;
 
@@ -174,9 +176,9 @@ begin
 
   for t in select distinct x from unnest(old_tags||new_tags) as u(x) loop
     if (t=any(new_tags)) and not (t=any(old_tags)) then
-      perform api._webhook_notify(t,format('[%s] task added to tag',t),format('%s',new.title));
+      perform api._webhook_notify(t,format('[%s] task added to tag',t),format('%s',new.title),'info',url);
     elsif (t=any(old_tags)) and not (t=any(new_tags)) then
-      perform api._webhook_notify(t,format('[%s] task removed from tag',t),format('%s',old.title),'warning');
+      perform api._webhook_notify(t,format('[%s] task removed from tag',t),format('%s',old.title),'warning',url);
     elsif (t=any(new_tags)) and (due_changed or done_changed or content_changed) then
       perform api._webhook_notify(
         t,format('[%s] task updated',t),
@@ -185,7 +187,7 @@ begin
           case when content_changed then E'\nTitle/description updated' else '' end,
           case when due_changed then format(E'\nDue date: %s → %s',coalesce(old.due_date::text,'(none)'),coalesce(new.due_date::text,'(none)')) else '' end,
           case when done_changed then format(E'\nDone: %s → %s',old.done,new.done) else '' end
-        )
+        ),'info',url
       );
     end if;
   end loop;
