@@ -205,9 +205,15 @@ async def _proc(pg, c, row):
     if nxt is None:
       await _del(c,sid)
       if sid.startswith("reminder-"):
-        await pg.execute("delete from api.reminders where id=$1", int(sid.split("-",1)[1]))
+        await pg.execute(
+          "insert into api.temporal_inbox(kind,payload) values('gc_exhausted',$1::jsonb)",
+          json.dumps({"reminder_id":int(sid.split("-",1)[1])}),
+        )
       elif sid.startswith("taskroll-"):
-        await pg.execute("update api.tasks set schedule=null where id=$1", int(sid.split("-",1)[1]))
+        await pg.execute(
+          "insert into api.temporal_inbox(kind,payload) values('clear_task_schedule',$1::jsonb)",
+          json.dumps({"task_id":int(sid.split("-",1)[1])}),
+        )
 
     await pg.execute(MARK_OK,oid)
   except Exception as e:
