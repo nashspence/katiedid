@@ -463,16 +463,19 @@ async function render(req, res) {
             </tr>`).join("")
           : "<tr><td colspan=4>None</td></tr>";
 
+        const historyBlock = r.page === "task" ? html`
+          <h2>History</h2>
+          <table>
+            <thead><tr><th>When</th><th>Change</th><th>Old</th><th>New</th></tr></thead>
+            <tbody>${hist}</tbody>
+          </table>` : "";
+
         return html`${nav(u)}${hdr}
           <div><a href="${newHref}">+ New</a></div>
           ${filters(u, r)}
           <table>${head}<tbody>${list.map((t) => row(u, r, t)).join("")}</tbody></table>
           ${pager(u, r, more)}
-          <h2>History</h2>
-          <table>
-            <thead><tr><th>When</th><th>Change</th><th>Old</th><th>New</th></tr></thead>
-            <tbody>${hist}</tbody>
-          </table>`;
+          ${historyBlock}`;
       }
 
       if (r.page === "new") {
