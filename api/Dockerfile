@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl tini xz-utils \
+    ca-certificates curl tini xz-utils git \
   && rm -rf /var/lib/apt/lists/*
 
 ARG TEMPORAL_CLI_VERSION=1.5.0
@@ -48,7 +48,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY reminders.py entrypoint.sh ./
+COPY reminders.py temporal_schedule_input.py entrypoint.sh ./
 RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 80
